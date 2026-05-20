@@ -139,7 +139,7 @@ export class SmtpSenderService {
         },
         payload
       );
-      return new CustomResponse(200, 'Email sent successfully', result);
+      return new CustomResponse(200, `Email sent successfully from ${config.fromEmail}`, result);
     } catch (error) {
       throwException(new CustomError(error.status || 500, error.message));
     }
@@ -159,7 +159,7 @@ export class SmtpSenderService {
         dto.payload
       );
 
-      return new CustomResponse(200, 'Direct email sent successfully', result);
+      return new CustomResponse(200, `Direct email sent successfully from ${dto.smtpConfig.fromEmail}`, result);
     } catch (error) {
       throwException(new CustomError(error.status || 500, error.message));
     }

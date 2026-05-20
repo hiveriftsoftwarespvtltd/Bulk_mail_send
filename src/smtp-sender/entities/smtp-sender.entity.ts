@@ -41,8 +41,14 @@ export class SmtpSender {
 
 
   @Prop()
-  @Prop()
   replyTo: string;
+
+  // IMAP settings for reading replies (optional — auto-derived from smtpHost if not set)
+  @Prop()
+  imapHost: string;
+
+  @Prop()
+  imapPort: number;
 
 }
 export const SmtpSenderSchema = SchemaFactory.createForClass(SmtpSender);

@@ -13,7 +13,7 @@ export class TrackingDomainService {
   private readonly DEFAULT_CNAME_TARGET = 'track.bulkmail.com';
 
   constructor(
-    @InjectModel(TrackingDomain.name) private trackingDomainModel: Model<TrackingDomainDocument>,
+    @InjectModel('TrackingDomain') private trackingDomainModel: Model<TrackingDomainDocument>,
   ) {}
 
   getGenerateCname() {

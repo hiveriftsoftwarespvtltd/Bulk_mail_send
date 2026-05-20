@@ -64,6 +64,7 @@ export class MailController {
     const companyId = req.user?.companyId || 'default-company-id';
     return this.emailLogModel.find({ companyId }).sort({ createdAt: -1 }).limit(100);
   }
+  
   @Get('stats')
   async getStats(@Request() req: any) {
     const companyId = req.user?.companyId || 'default-company-id';

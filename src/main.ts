@@ -10,21 +10,31 @@ import { ConfigService } from '@nestjs/config';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  
+
   const configService = app.get(ConfigService);
-  const port = configService.get<number>('PORT') || 3000;
+  const port = configService.get<number>('PORT') || 9000;
+  const frontendUrl = configService.get<string>('FRONTEND_URL');
 
   app.enableCors({
-    origin: configService.get<string>('FRONTEND_URL'),
+    origin: [
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      frontendUrl,
+    ],
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
-  app.useGlobalPipes(new ValidationPipe({
-    whitelist: true,
-    transform: true,
-  }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+    }),
+  );
 
   await app.listen(port);
   console.log(`Application is running on: http://localhost:${port}`);
 }
+
 bootstrap();

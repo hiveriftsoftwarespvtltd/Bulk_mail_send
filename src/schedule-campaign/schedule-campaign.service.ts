@@ -31,8 +31,15 @@ export class ScheduleCampaignService {
         maxLeadsPerDay: dto.maxLeadsPerDay,
       };
 
-      const result = await this.model.create(data);
-      return new CustomResponse(201, 'Schedule campaign created successfully', result);
+      // ✅ UPSERT: Each user has only ONE schedule document.
+      // This prevents stale/duplicate schedules from accumulating and
+      // causing the wrong interval to be picked when a campaign starts.
+      const result = await this.model.findOneAndUpdate(
+        { userId },
+        { $set: data },
+        { upsert: true, returnDocument: 'after', new: true },
+      );
+      return new CustomResponse(201, 'Schedule saved successfully', result);
     } catch (error) {
       throwException(new CustomError(error.status || 400, error.message));
     }

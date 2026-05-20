@@ -6,6 +6,7 @@ import { CreateCampaign, CreateCampaignSchema } from '../create-campaign/entitie
 import { EmailLog, EmailLogSchema } from '../logs/schemas/email-log.schema';
 import { SmtpSender, SmtpSenderSchema } from '../smtp-sender/entities/smtp-sender.entity';
 import { User, UserSchema } from '../auth/schemas/user.schema';
+import { GoogleMail, GoogleMailSchema } from '../google-mail/entities/google-mail.entity';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { User, UserSchema } from '../auth/schemas/user.schema';
       { name: EmailLog.name, schema: EmailLogSchema },
       { name: SmtpSender.name, schema: SmtpSenderSchema },
       { name: User.name, schema: UserSchema },
+      { name: GoogleMail.name, schema: GoogleMailSchema },
     ]),
 
   ],

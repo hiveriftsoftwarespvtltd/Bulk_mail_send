@@ -22,6 +22,21 @@ export class TrackingController {
     return 'Desktop/Laptop';
   }
 
+  private isBot(userAgent: string): boolean {
+    if (!userAgent) return false;
+    const bots = [
+      'bot', 'crawler', 'spider', 'google', 'bing', 'yahoo', 'preview', 'scanner',
+      'monitoring', 'validator', 'checker', 'facebook', 'twitter', 'linkedin',
+      'slack', 'discord', 'telegram', 'whatsapp', 'outlook-android', 'outlook-ios',
+      'gmail', 'protonmail', 'apple-mail', 'fire-fox-preview', 'headless', 
+      'chrome-lighthouse', 'gsa-crawler', 'embedly', 'quora', 'pinterest', 
+      'outbrain', 'vkshare', 'getpocket', 'flipboard', 'instapaper', 'buffer',
+      'baiduspider', 'yandexbot', 'duckduckbot', 'facebot', 'ia_archiver'
+    ];
+    const ua = userAgent.toLowerCase();
+    return bots.some(bot => ua.includes(bot));
+  }
+
   @Get('open/:id')
   async trackOpen(
     @Param('id') trackingId: string, 
@@ -32,21 +47,34 @@ export class TrackingController {
     const userAgent = req.headers['user-agent'] || '';
     const device = this.getDeviceType(userAgent);
 
-    try {
-      console.log(` Tracking ID: ${trackingId} | Event: OPENED | Device: ${device} | IP: ${ip}`);
-      await this.emailLogModel.updateOne(
-        { trackingId, status: { $ne: 'CLICKED' } },
-        { 
-          $set: { 
-            status: 'OPENED', 
-            openedAt: new Date(),
-            ipAddress: ip,
-            device: device
-          } 
+    if (this.isBot(userAgent)) {
+      console.log(` 🤖 Bot Detected (OPEN): ${userAgent} | IP: ${ip} | Skipping...`);
+    } else {
+      try {
+        const log = await this.emailLogModel.findOneAndUpdate(
+          { trackingId, status: 'SENT' },
+          { 
+            $set: { 
+              status: 'OPENED', 
+              openedAt: new Date(),
+              ipAddress: ip,
+              device: device
+            } 
+          },
+          { new: true }
+        );
+
+        if (log && log.campaignId) {
+          // Increment the 'opened' counter in the Campaign table for permanent persistence
+          await this.emailLogModel.db.model('CreateCampaign').updateOne(
+            { _id: log.campaignId },
+            { $inc: { opened: 1 } }
+          );
+          console.log(`📈 Incremented opened counter for campaign: ${log.campaignId}`);
         }
-      );
-    } catch (e) {
-      console.error('Error tracking open:', e);
+      } catch (e) {
+        console.error('Error tracking open:', e);
+      }
     }
 
     const buf = Buffer.from(
@@ -62,6 +90,7 @@ export class TrackingController {
     });
     res.end(buf);
   }
+
   @Get('click/:id')
   async trackClick(
     @Param('id') trackingId: string,
@@ -73,21 +102,48 @@ export class TrackingController {
     const userAgent = req.headers['user-agent'] || '';
     const device = this.getDeviceType(userAgent);
 
-    try {
-      console.log(` Tracking ID: ${trackingId} | Event: CLICKED | Target: ${targetUrl} | Device: ${device} | IP: ${ip}`);
-      await this.emailLogModel.updateOne(
-        { trackingId },
-        { 
-          $set: { 
-            status: 'CLICKED', 
-            clickedAt: new Date(),
-            ipAddress: ip,
-            device: device
-          } 
+    if (this.isBot(userAgent)) {
+      console.log(` 🤖 Bot Detected (CLICK): ${userAgent} | IP: ${ip} | Redirecting without tracking...`);
+    } else {
+      try {
+        console.log(` Tracking ID: ${trackingId} | Event: CLICKED | Target: ${targetUrl} | Device: ${device} | IP: ${ip}`);
+        
+        const updateData: any = { 
+          status: 'CLICKED', 
+          clickedAt: new Date(),
+          ipAddress: ip,
+          device: device
+        };
+
+        const log = await this.emailLogModel.findOneAndUpdate(
+          { trackingId, status: { $in: ['SENT', 'OPENED'] } },
+          { 
+            $set: updateData,
+            $setOnInsert: { openedAt: new Date() } 
+          },
+          { new: true }
+        );
+
+        // Explicitly set openedAt if it was still SENT
+        if (log && !log.openedAt) {
+          await this.emailLogModel.updateOne(
+            { trackingId },
+            { $set: { openedAt: new Date() } }
+          );
         }
-      );
-    } catch (e) {
-      console.error('Error tracking click:', e);
+
+        if (log && log.campaignId) {
+          // Increment the 'clicked' counter in the Campaign table
+          await this.emailLogModel.db.model('CreateCampaign').updateOne(
+            { _id: log.campaignId },
+            { $inc: { clicked: 1 } }
+          );
+          console.log(`📈 Incremented clicked counter for campaign: ${log.campaignId}`);
+        }
+
+      } catch (e) {
+        console.error('Error tracking click:', e);
+      }
     }
 
     if (targetUrl) {

@@ -42,5 +42,12 @@ export class CreateSmtpSenderDto {
   @IsEmail()
   replyTo: string;
 
+  // IMAP (for fetching replies) — optional, auto-derived from smtpHost if not provided
+  @IsOptional()
+  @IsString()
+  imapHost: string;
 
+  @IsOptional()
+  @IsNumber()
+  imapPort: number;
 }

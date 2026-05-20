@@ -6,6 +6,7 @@ import { SmtpSender } from '../smtp-sender/entities/smtp-sender.entity';
 import { ScheduleCampaign, ScheduleCampaignDocument } from '../schedule-campaign/entities/schedule-campaign.entity';
 import { EmailLog, EmailLogDocument } from '../logs/schemas/email-log.schema';
 import { GoogleMail, GoogleMailDocument } from '../google-mail/entities/google-mail.entity';
+import { TrackingDomain, TrackingDomainDocument } from '../tracking-domain/schemas/tracking-domain.schema';
 import { ConfigService } from '@nestjs/config';
 import { Model } from 'mongoose';
 import { throwException } from 'src/util/util/errorhandling';
@@ -32,6 +33,8 @@ export class CreateCampaignService {
     private scheduleModel: Model<ScheduleCampaignDocument>,
     @InjectModel(GoogleMail.name)
     private googleMailModel: Model<GoogleMailDocument>,
+    @InjectModel('TrackingDomain')
+    private trackingDomainModel: Model<TrackingDomainDocument>,
     @InjectQueue('campaign')
     private campaignQueue: Queue,
     private mailService: MailService,
@@ -102,7 +105,7 @@ export class CreateCampaignService {
 
         // Dynamic mapping based on whatever fields were sent in the DTO
         // We exclude known non-mapping fields like filePath, name, subject, body, etc.
-        const excludeFields = ['filePath', 'name', 'subject', 'body', 'status'];
+        const excludeFields = ['filePath', 'name', 'subject', 'body', 'status', 'trackingDomainId', 'selectedAccountIds', 'smtpAccountId'];
 
         for (const [key, csvColumn] of Object.entries(dto)) {
           if (!excludeFields.includes(key) && typeof csvColumn === 'string') {
@@ -124,7 +127,8 @@ export class CreateCampaignService {
         body: dto.body,
         status: dto.status || 'ACTIVE',
         contacts: mappedContacts,
-        // Save the mapping for reference
+        trackingDomainId: dto.trackingDomainId,
+        selectedAccountIds: dto.selectedAccountIds || (dto.smtpAccountId ? (Array.isArray(dto.smtpAccountId) ? dto.smtpAccountId : [dto.smtpAccountId]) : []),
         mapping: dto
       });
 
@@ -141,16 +145,51 @@ export class CreateCampaignService {
 
   private async integrateDynamicStats(campaign: any, workspaceId: string) {
     const obj = campaign.toObject ? campaign.toObject() : { ...campaign };
-    const total = await this.emailLogModel.countDocuments({ companyId: workspaceId, subject: obj.subject });
-    const opened = await this.emailLogModel.countDocuments({ companyId: workspaceId, subject: obj.subject, status: { $in: ['OPENED', 'CLICKED'] } });
-    const clicked = await this.emailLogModel.countDocuments({ companyId: workspaceId, subject: obj.subject, status: 'CLICKED' });
+    const campaignId = obj._id.toString();
+
+    const total = await this.emailLogModel.countDocuments({ companyId: workspaceId, campaignId });
+    const opened = await this.emailLogModel.countDocuments({ companyId: workspaceId, campaignId, status: { $in: ['OPENED', 'CLICKED', 'REPLIED'] } });
+    const clicked = await this.emailLogModel.countDocuments({ companyId: workspaceId, campaignId, status: 'CLICKED' });
+    const replied = await this.emailLogModel.countDocuments({ companyId: workspaceId, campaignId, status: 'REPLIED' });
+
+    // ── DOMAIN BREAKDOWN ──────────────────────────────────────────────────
+    // Group logs by the domain part of the sender email
+    const domainStats = await this.emailLogModel.aggregate([
+      { $match: { campaignId: campaignId, companyId: workspaceId } },
+      {
+        $project: {
+          status: 1,
+          domain: { $arrayElemAt: [{ $split: ["$smtpEmail", "@"] }, 1] }
+        }
+      },
+      {
+        $group: {
+          _id: "$domain",
+          totalSent: { $sum: 1 },
+          opened: { $sum: { $cond: [{ $in: ["$status", ["OPENED", "CLICKED", "REPLIED"]] }, 1, 0] } },
+          clicked: { $sum: { $cond: [{ $eq: ["$status", "CLICKED"] }, 1, 0] } },
+          replied: { $sum: { $cond: [{ $eq: ["$status", "REPLIED"] }, 1, 0] } }
+        }
+      },
+      { $sort: { totalSent: -1 } }
+    ]);
 
     obj.sent = total;
     obj.opened = opened;
-    obj.replied = clicked;
+    obj.replied = replied;
+    obj.clicked = clicked;
     obj.positiveReply = 0;
     obj.bounced = 0;
     obj.senderBounced = 0;
+    obj.domainBreakdown = domainStats.map(ds => ({
+      domain: ds._id,
+      sent: ds.totalSent,
+      opened: ds.opened,
+      clicked: ds.clicked,
+      replied: ds.replied,
+      openRate: ds.totalSent > 0 ? ((ds.opened / ds.totalSent) * 100).toFixed(2) : "0.00",
+      clickRate: ds.totalSent > 0 ? ((ds.clicked / ds.totalSent) * 100).toFixed(2) : "0.00"
+    }));
 
     return obj;
   }
@@ -264,7 +303,7 @@ export class CreateCampaignService {
           replyTo: smtpConfig.useCustomReplyTo ? smtpConfig.replyTo : smtpConfig.fromEmail,
         });
 
-        return new CustomResponse(200, 'Test email sent successfully via SMTP', result);
+        return new CustomResponse(200, `Test email sent successfully via SMTP from ${smtpConfig.fromEmail}`, result);
       }
 
       // 2. Try to find Google account
@@ -297,10 +336,9 @@ export class CreateCampaignService {
           subject: mailSubject,
           html: mailBody,
         });
-
-        return new CustomResponse(200, 'Test email sent successfully via Google OAuth', result);
+        
+        return new CustomResponse(200, `Test email sent successfully via Google OAuth from ${googleConfig.email}`, result);
       }
-
       throw new NotFoundException(`Account configuration not found for: ${accountId}`);
     } catch (error) {
       throwException(new CustomError(error.status || 500, error.message));
@@ -335,7 +373,10 @@ export class CreateCampaignService {
     try {
       const campaign = await this.campaignModel.findOneAndUpdate(
         { _id: id, workspaceId },
-        { scheduledAt: scheduledAt ? new Date(scheduledAt) : null, status: scheduledAt ? 'SCHEDULED' : 'SENDING' },
+        { 
+          scheduledAt: scheduledAt ? new Date(scheduledAt) : null, 
+          status: scheduledAt ? 'SCHEDULED' : 'ACTIVE'
+        },
         { returnDocument: 'after' }
       );
 
@@ -370,8 +411,19 @@ export class CreateCampaignService {
       console.log(`✅ Campaign found: ${campaign.name}. Validating sender accounts...`);
 
       let targetAccountIds: string[] = [];
-      if (!smtpAccountId || smtpAccountId === 'all' || (Array.isArray(smtpAccountId) && smtpAccountId.length === 0)) {
-        console.log(`No accounts specified. Fetching all available accounts for workspace: ${workspaceId}`);
+      const providedIds = Array.isArray(smtpAccountId) ? smtpAccountId : (smtpAccountId ? [smtpAccountId] : []);
+
+      if (providedIds.length > 0 && providedIds[0] !== 'all') {
+        // If IDs are provided, use them and SAVE them to the campaign for future resumes
+        targetAccountIds = providedIds;
+        await this.campaignModel.findByIdAndUpdate(campaign._id, { selectedAccountIds: targetAccountIds });
+      } else if (campaign.selectedAccountIds && campaign.selectedAccountIds.length > 0) {
+        // If no IDs provided but we HAVE saved IDs, use the saved ones
+        console.log(`Using previously selected accounts: ${campaign.selectedAccountIds.length} accounts found.`);
+        targetAccountIds = campaign.selectedAccountIds;
+      } else {
+        // Fallback to all available accounts
+        console.log(`No accounts specified and no saved selection. Fetching all available accounts for workspace: ${workspaceId}`);
         const [smtpConfigs, googleConfigs] = await Promise.all([
           this.smtpSenderModel.find({ tenantId: workspaceId }),
           this.googleMailModel.find({ tenantId: workspaceId })
@@ -380,8 +432,6 @@ export class CreateCampaignService {
           ...smtpConfigs.map(c => (c as any)._id.toString()),
           ...googleConfigs.map(c => (c as any)._id.toString())
         ];
-      } else {
-        targetAccountIds = Array.isArray(smtpAccountId) ? smtpAccountId : [smtpAccountId];
       }
 
       const [smtpConfigs, googleConfigs] = await Promise.all([
@@ -462,7 +512,27 @@ export class CreateCampaignService {
       this.googleMailModel.find({ _id: { $in: accountIds }, tenantId: workspaceId }).lean()
     ]);
 
-    console.log(`🛠️ Job resolution: Found ${smtpConfigs.length} SMTP and ${googleConfigs.length} Google accounts.`);
+    // ✅ Resolve Tracking Domain:
+    // 1. Try specifically selected domain for this campaign
+    // 2. Fallback to first verified domain for workspace
+    let trackingDomain: any = null;
+    if ((campaign as any).trackingDomainId) {
+      trackingDomain = await this.trackingDomainModel.findOne({ 
+        _id: (campaign as any).trackingDomainId, 
+        tenantId: workspaceId, 
+        verified: true 
+      }).lean();
+    }
+   
+    if (!trackingDomain) {
+      trackingDomain = await this.trackingDomainModel.findOne({ 
+        tenantId: workspaceId, 
+        verified: true 
+      }).lean();
+    }
+
+    const customTrackingDomain = trackingDomain?.domainName;
+    console.log(`🛠️ Job resolution: Found ${smtpConfigs.length} SMTP and ${googleConfigs.length} Google accounts. Tracking Domain: ${customTrackingDomain || 'Default'}`);
 
     const accounts: any[] = [];
 
@@ -550,21 +620,33 @@ export class CreateCampaignService {
       return;
     }
 
-    await this.processCampaignSending(campaign, accounts, workspaceId);
+    await this.processCampaignSending(campaign, accounts, workspaceId, customTrackingDomain);
   }
 
-  private async processCampaignSending(campaign: any, accounts: any[], workspaceId: string) {
-    console.log(`🚀 Starting Bulk Send for Campaign: ${campaign.name} (${campaign.contacts.length} contacts) using ${accounts.length} accounts`);
+  private async processCampaignSending(campaign: any, accounts: any[], workspaceId: string, customDomain?: string) {
+    console.log(`🚀 Starting Bulk Send for Campaign: ${campaign.name} (Progress: ${campaign.currentIndex || 0}/${campaign.contacts.length})`);
+
+    // Mark campaign as SENDING when bulk dispatch begins
+    await this.campaignModel.findByIdAndUpdate(campaign._id, { status: 'SENDING' });
 
     let currentAccountIndex = 0;
-    for (const contact of campaign.contacts) {
+    const startIndex = campaign.currentIndex || 0;
+
+    for (let i = startIndex; i < campaign.contacts.length; i++) {
+      // ✅ CHECK STATUS: If user paused the campaign, stop the loop immediately
+      const freshCampaign = await this.campaignModel.findById(campaign._id).lean();
+      if (!freshCampaign || (freshCampaign as any).status === 'PAUSED') {
+        console.log(`⏸️ Campaign ${campaign._id} has been PAUSED or deleted. Stopping execution at index ${i}.`);
+        return;
+      }
+
+      const contact = campaign.contacts[i];
       let currentAccount: any = null;
       try {
         const recipientEmail = contact.email ? contact.email.toString().trim() : '';
 
-        // ✅ VALIDATION: Ensure the email is valid and contains an '@'
         if (!recipientEmail || !recipientEmail.includes('@')) {
-          console.error(`⚠️ Skipping Contact: "${recipientEmail}" is not a valid email. Please check your CSV mapping.`);
+          console.error(`⚠️ Skipping Contact: "${recipientEmail}" is not a valid email.`);
           continue;
         }
 
@@ -583,36 +665,73 @@ export class CreateCampaignService {
           workspaceId,
           type,
           fromName,
-          replyTo
+          replyTo,
+          customDomain,
+          campaign._id.toString()
         );
 
-        console.log(`✅ [${type}: ${fromEmail}] Sent & Logged successfully to: ${contact.email}`);
+        // Update progress in DB
+        await this.campaignModel.findByIdAndUpdate(campaign._id, { currentIndex: i + 1 });
 
+        console.log(`✅ [${i+1}/${campaign.contacts.length}] Sent to: ${contact.email}`);
         currentAccountIndex++;
       } catch (error) {
-        let errorMessage = error.message;
-        if (errorMessage.includes('535-5.7.8') || errorMessage.includes('BadCredentials')) {
-          const fromEmail = currentAccount?.fromEmail || '';
-          const type = currentAccount?.type || 'SMTP';
-
-          if (fromEmail.toLowerCase().endsWith('@gmail.com') && type === 'SMTP') {
-            console.error(`⚠️  [GMAIL SMTP ERROR]: Google rejected your password. 
-👉 FOR GMAIL SMTP: You MUST use an "App Password" (not your regular password).
-👉 OR BETTER: Delete this account and add it via "Connect Google Account" (OAuth) for 100% success.`);
-          }
-          errorMessage = 'SMTP/OAuth Error: Authentication failed. Please check your credentials.';
-        }
-        console.error(`❌ Failed sending to ${contact.email}:`, errorMessage);
+        console.error(`❌ Failed sending to ${contact.email}:`, error.message);
       }
 
-      // Always wait the specified interval, even on failure
       const delayMs = (campaign.delayMinutes || 0.05) * 60 * 1000;
-      if (delayMs > 0) {
-        console.log(`Waiting ${delayMs}ms before next email...`);
+      if (delayMs > 0 && i < campaign.contacts.length - 1) {
+        const remaining = campaign.contacts.length - (i + 1);
+        console.log(`⏳ [${i+1}/${campaign.contacts.length}] Waiting ${campaign.delayMinutes}m before next email... (${remaining} remaining)`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
     }
 
-    console.log(`🏁 Finished Bulk Send for Campaign: ${campaign.name}`);
+    // Mark campaign as FINISHED once all contacts have been processed
+    await this.campaignModel.findByIdAndUpdate(campaign._id, { status: 'FINISHED' });
+    console.log(`🏁 Finished Bulk Send for Campaign: ${campaign.name} → Status set to FINISHED`);
+  }
+
+  async pauseCampaign(id: string, workspaceId: string) {
+    const campaign = await this.campaignModel.findOneAndUpdate(
+      { _id: id, workspaceId },
+      { status: 'PAUSED' },
+      { returnDocument: 'after' }
+    );
+    if (!campaign) throw new NotFoundException('Campaign not found');
+    return new CustomResponse(200, 'Campaign paused successfully', campaign);
+  }
+
+  async resumeCampaign(id: string, workspaceId: string, smtpAccountId?: string | string[]) {
+    const campaign = await this.campaignModel.findOne({ _id: id, workspaceId });
+    if (!campaign) throw new NotFoundException('Campaign not found');
+    
+    // Allow resuming if status is PAUSED, ACTIVE, or DRAFT
+    const allowedStatuses = ['PAUSED', 'ACTIVE', 'DRAFT'];
+    if (!allowedStatuses.includes(campaign.status)) {
+      throwException(new CustomError(400, `Cannot resume campaign with status: ${campaign.status}. Use 'Restart' if it is already finished.`));
+    }
+
+    // Update status to SENDING
+    campaign.status = 'SENDING';
+    await campaign.save();
+
+    return this.startCampaign(id, smtpAccountId || [], workspaceId);
+  }
+
+  async restartCampaign(id: string, workspaceId: string, smtpAccountId?: string | string[]) {
+    const campaign = await this.campaignModel.findOne({ _id: id, workspaceId });
+    if (!campaign) throw new NotFoundException('Campaign not found');
+
+    // Reset progress
+    campaign.currentIndex = 0;
+    campaign.status = 'SENDING';
+    await campaign.save();
+
+    // Optionally you could delete logs here, but usually it's better to keep history
+    // and let the user see the new logs with a fresh campaignId if they wanted a clean slate.
+    // For now, we just reset the index.
+
+    return this.startCampaign(id, smtpAccountId || [], workspaceId);
   }
 }

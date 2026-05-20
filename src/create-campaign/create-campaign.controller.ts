@@ -50,8 +50,7 @@ export class CreateCampaignController {
       message: 'File uploaded successfully',
       ...data,
     };
-  }
-
+  } 
   @Post('map')
   async mapFields(@Body() body: any) {
     console.log('MAP BODY:', body);
@@ -88,6 +87,32 @@ export class CreateCampaignController {
   ) {
     const workspaceId = req.user?.companyId || 'default-company-id';
     return this.service.startCampaign(id, body.smtpAccountId, workspaceId, body.delayMinutes, body.scheduledAt);
+  }
+
+  @Post(':id/pause')
+  async pauseCampaign(@Param('id') id: string, @Request() req: any) {
+    const workspaceId = req.user?.companyId || 'default-company-id';
+    return this.service.pauseCampaign(id, workspaceId);
+  }
+
+  @Post(':id/resume')
+  async resumeCampaign(
+    @Param('id') id: string, 
+    @Body() body: { smtpAccountId?: string | string[] } = {},
+    @Request() req: any
+  ) {
+    const workspaceId = req.user?.companyId || 'default-company-id';
+    return this.service.resumeCampaign(id, workspaceId, body.smtpAccountId);
+  }
+
+  @Post(':id/restart')
+  async restartCampaign(
+    @Param('id') id: string, 
+    @Body() body: { smtpAccountId?: string | string[] } = {},
+    @Request() req: any
+  ) {
+    const workspaceId = req.user?.companyId || 'default-company-id';
+    return this.service.restartCampaign(id, workspaceId, body.smtpAccountId);
   }
 
   @Get()

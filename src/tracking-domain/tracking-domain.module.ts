@@ -7,7 +7,7 @@ import { TrackingDomain, TrackingDomainSchema } from './schemas/tracking-domain.
 @Module({
   imports: [
     MongooseModule.forFeature([
-      { name: TrackingDomain.name, schema: TrackingDomainSchema },
+      { name: 'TrackingDomain', schema: TrackingDomainSchema },
     ]),
   ],
   controllers: [TrackingDomainController],

@@ -10,6 +10,7 @@ import { EmailLog, EmailLogSchema } from '../logs/schemas/email-log.schema';
 import { BullModule } from '@nestjs/bull';
 import { CampaignProcessor } from './processors/campaign.processor';
 import { GoogleMail, GoogleMailSchema } from '../google-mail/entities/google-mail.entity';
+import { TrackingDomain, TrackingDomainSchema } from '../tracking-domain/schemas/tracking-domain.schema';
 
 @Module({
   imports: [
@@ -18,7 +19,8 @@ import { GoogleMail, GoogleMailSchema } from '../google-mail/entities/google-mai
       { name: SmtpSender.name, schema: SmtpSenderSchema },
       { name: EmailLog.name, schema: EmailLogSchema },
       { name: ScheduleCampaign.name, schema: ScheduleCampaignSchema },
-      { name: GoogleMail.name, schema: GoogleMailSchema }
+      { name: GoogleMail.name, schema: GoogleMailSchema },
+      { name: 'TrackingDomain', schema: TrackingDomainSchema }
     ]),
     MailModule,
     BullModule.registerQueue({

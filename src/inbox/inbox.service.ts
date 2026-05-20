@@ -73,16 +73,24 @@ export class InboxService {
 
       this.logger.log(`🔍 [SENT] Fetching logs for email: ${email}, companyId: ${companyId}`);
 
-      const skip = (page - 1) * limit;
+      const skip = Math.max(0, (page - 1)) * limit;
       const logs = await this.emailLogModel
-        .find({ smtpEmail: email, companyId: companyId })
+        .find({ 
+          smtpEmail: email, 
+          companyId: companyId,
+          campaignId: { $exists: true, $ne: null } 
+        })
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean();
 
       this.logger.log(`📊 [SENT] Found ${logs.length} logs for this company/email`);
-      const total = await this.emailLogModel.countDocuments({ smtpEmail: email, companyId: companyId });
+      const total = await this.emailLogModel.countDocuments({ 
+        smtpEmail: email, 
+        companyId: companyId,
+        campaignId: { $exists: true, $ne: null } 
+      });
 
       return new CustomResponse(200, 'Sent mails fetched', { logs, total, page, limit });
     } catch (error) {
@@ -167,17 +175,48 @@ export class InboxService {
 
   private async getSmtpReplies(account: SmtpSenderDocument, targetMessageId?: string) {
     const cleanId = (id: string) => id ? id.replace(/[<>]/g, '').trim().toLowerCase() : '';
-    
-    this.logger.log(`🔄 [IMAP] Connecting to ${account.smtpHost.replace('smtp.', 'imap.')} for ${account.fromEmail}...`);
+
+    // ── GMAIL AUTO-ROUTING (Bypass IMAP) ──────────────────────────────────────
+    // If the email is Gmail, try to use Gmail API (OAuth) instead of IMAP
+    if (account.fromEmail?.toLowerCase().endsWith('@gmail.com')) {
+      const oauthAccount = await this.googleMailModel.findOne({ 
+        email: account.fromEmail, 
+        tenantId: account.tenantId 
+      });
+      
+      if (oauthAccount) {
+        this.logger.log(`🚀 [GMAIL] Routing ${account.fromEmail} via Gmail API instead of IMAP`);
+        return this.getGoogleReplies(oauthAccount, targetMessageId);
+      }
+      
+      this.logger.warn(`⚠️ [GMAIL] ${account.fromEmail} is a Gmail account but no OAuth credentials found. Falling back to IMAP (expect failure if App Password is missing).`);
+    }
+
+    // ── Resolve IMAP host & port ──────────────────────────────────────────────
+    // Use saved imapHost if user configured it; otherwise derive from smtpHost
+    const rawSmtp = account.smtpHost || '';
+    let imapHost: string = (account as any).imapHost || '';
+    let imapPort: number = (account as any).imapPort || 993;
+
+    if (!imapHost) {
+      if (rawSmtp.startsWith('smtp.')) {
+        imapHost = rawSmtp.replace('smtp.', 'imap.');
+      } else {
+        imapHost = rawSmtp; // same host works for many providers (e.g. mail.example.com)
+      }
+    }
+
+    this.logger.log(`🔄 [IMAP] Resolved host: ${imapHost}:${imapPort} for ${account.fromEmail}`);
 
     const client = new ImapFlow({
-      host: account.smtpHost.replace('smtp.', 'imap.'),
-      port: 993,
-      secure: true,
+      host: imapHost,
+      port: imapPort,
+      secure: imapPort === 993,   // 993 = implicit SSL, 143 = STARTTLS
       auth: {
         user: account.userName,
         pass: account.password,
       },
+      tls: { rejectUnauthorized: false }, // allow self-signed certs
       logger: false,
     });
 
@@ -188,7 +227,8 @@ export class InboxService {
 
       const sentLogs = await this.emailLogModel.find({ 
         smtpEmail: account.fromEmail, 
-        companyId: account.tenantId 
+        companyId: account.tenantId,
+        campaignId: { $exists: true, $ne: null }
       }).select('messageId').lean();
       
       const sentMessageIds = new Set(sentLogs.map(log => cleanId(log.messageId)));
@@ -214,17 +254,30 @@ export class InboxService {
              isOurReply = sentMessageIds.has(inReplyTo) || references.some(ref => sentMessageIds.has(ref));
            }
 
-           if (isOurReply) {
-             replies.push({
-               subject: parsed.subject,
-               from: parsed.from?.text,
-               date: parsed.date,
-               text: parsed.text,
-               html: parsed.html,
-               messageId: parsed.messageId,
-               inReplyTo: parsed.inReplyTo
-             });
-           }
+            if (isOurReply) {
+              // ✅ Update original EmailLog status to REPLIED
+              const targetId = inReplyTo || (references.length > 0 ? references[0] : null);
+              if (targetId) {
+                await this.emailLogModel.updateOne(
+                  { 
+                    messageId: { $regex: targetId, $options: 'i' }, 
+                    companyId: account.tenantId,
+                    status: { $ne: 'REPLIED' } 
+                  },
+                  { $set: { status: 'REPLIED' } }
+                );
+              }
+
+              replies.push({
+                subject: parsed.subject,
+                from: parsed.from?.text,
+                date: parsed.date,
+                text: parsed.text,
+                html: parsed.html,
+                messageId: parsed.messageId,
+                inReplyTo: parsed.inReplyTo
+              });
+            }
         }
       } finally {
         lock.release();
@@ -233,8 +286,12 @@ export class InboxService {
       await client.logout();
       return new CustomResponse(200, 'Replies fetched', replies.sort((a, b) => b.date - a.date));
     } catch (error) {
-      this.logger.error(`❌ [IMAP] Error for ${account.fromEmail}: ${error.message}`);
-      return new CustomResponse(500, `Could not connect to IMAP: ${error.message}`, []);
+      this.logger.error(`❌ [IMAP] Failed for ${account.fromEmail} → ${imapHost}:${imapPort} | ${error.message}`);
+      if (account.fromEmail?.toLowerCase().endsWith('@gmail.com')) {
+        this.logger.error(`   Gmail Fix 1: Enable IMAP → Gmail Settings → Forwarding and POP/IMAP → Enable IMAP`);
+        this.logger.error(`   Gmail Fix 2: If 2FA is ON, use an App Password: https://myaccount.google.com/apppasswords`);
+      }
+      return new CustomResponse(500, `IMAP connection failed for ${account.fromEmail}: ${error.message}. Ensure IMAP is enabled in your email provider settings.`, []);
     }
   }
 
@@ -250,7 +307,11 @@ export class InboxService {
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
     try {
-      const sentLogs = await this.emailLogModel.find({ smtpEmail: account.email, companyId: account.tenantId }).select('messageId').lean();
+      const sentLogs = await this.emailLogModel.find({ 
+        smtpEmail: account.email, 
+        companyId: account.tenantId,
+        campaignId: { $exists: true, $ne: null }
+      }).select('messageId').lean();
       const sentMessageIds = new Set(sentLogs.map(log => cleanId(log.messageId)));
 
       const query = targetMessageId ? `rfc822msgid:${targetMessageId}` : 'is:inbox';
@@ -282,6 +343,19 @@ export class InboxService {
           }
 
           if (!isOurReply) return null;
+
+          // ✅ Update original EmailLog status to REPLIED
+          const targetId = inReplyTo || (references.length > 0 ? references[0] : null);
+          if (targetId) {
+            await this.emailLogModel.updateOne(
+              { 
+                messageId: { $regex: targetId, $options: 'i' }, 
+                companyId: account.tenantId,
+                status: { $ne: 'REPLIED' } 
+              },
+              { $set: { status: 'REPLIED' } }
+            );
+          }
 
           return {
             id: m.id,

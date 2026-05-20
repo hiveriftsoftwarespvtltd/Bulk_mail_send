@@ -14,7 +14,7 @@ export class MailService {
   private readonly logger = new Logger(MailService.name);
 
   constructor(
-    @InjectModel(EmailLog.name) private emailModel: Model<EmailLogDocument>,
+    @InjectModel(EmailLog.name) private emailModel: Model<EmailLogDocument>,  
     private configService: ConfigService,
   ) { }
 
@@ -28,6 +28,8 @@ export class MailService {
     provider: 'SMTP' | 'GOOGLE' = 'SMTP',
     fromName?: string,
     replyTo?: string,
+    customDomain?: string,
+    campaignId?: string,
   ) {
     const backendUrl = this.configService.get('BACKEND_URL') || 'http://localhost:9000';
     if (!this.configService.get('BACKEND_URL')) {
@@ -35,14 +37,18 @@ export class MailService {
     }
     const trackingId = uuidv4();
 
+    // Use custom domain if provided, otherwise fallback to backendUrl
+    // We assume customDomain is just the host (e.g. track.example.com)
+    const trackingBaseUrl = customDomain ? `http://${customDomain}` : backendUrl;
+
     // 1. Inject Tracking Pixel at the TOP of the body for better reliability
-    const pixelTag = `<img src="${backendUrl}/track/open/${trackingId}" width="1" height="1" style="display:none;" />`;
+    const pixelTag = `<img src="${trackingBaseUrl}/track/open/${trackingId}" width="1" height="1" style="display:none;" />`;
     let htmlMessage = pixelTag + message;
 
     // 2. Inject Tracking Links (Only wrap http/https web links)
     const linkRegex = /href="(https?:\/\/[^"]*)"/gi;
     htmlMessage = htmlMessage.replace(linkRegex, (match, url) => {
-      return `href="${backendUrl}/track/click/${trackingId}?url=${encodeURIComponent(url)}"`;
+      return `href="${trackingBaseUrl}/track/click/${trackingId}?url=${encodeURIComponent(url)}"`;
     });
 
     try {
@@ -64,6 +70,7 @@ export class MailService {
         companyId,
         messageId: info.messageId,
         provider,
+        campaignId,
       });
 
       this.logger.log(`Email sent to ${recipient} (Message-ID: ${info.messageId})`);
@@ -80,6 +87,7 @@ export class MailService {
     subject: string,
     message: string,
     companyId: string,
+    customDomain?: string,
   ) {
     try {
       const configs = Array.isArray(smtpConfig) ? smtpConfig : [smtpConfig];
@@ -122,6 +130,9 @@ export class MailService {
             message,
             companyId,
             'SMTP',
+            undefined,
+            undefined,
+            customDomain
           );
           results.push(res);
 
@@ -146,6 +157,7 @@ export class MailService {
     subject: string,
     message: string,
     companyId: string,
+    customDomain?: string,
   ) {
     try {
       const configs = Array.isArray(googleConfigs) ? googleConfigs : [googleConfigs];
@@ -177,6 +189,9 @@ export class MailService {
             message,
             companyId,
             'GOOGLE',
+            undefined,
+            undefined,
+            customDomain
           );
           results.push(res);
 

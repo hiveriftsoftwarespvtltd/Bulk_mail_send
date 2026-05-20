@@ -24,8 +24,12 @@ export class CreateCampaign {
   @Prop({ default: 'Untitled Campaign' })
   name: string;
 
-  @Prop({ default: 'DRAFT' })
+  // Status lifecycle: DRAFT → ACTIVE → SENDING → PAUSED → FINISHED (or SCHEDULED)
+  @Prop({ default: 'DRAFT', enum: ['DRAFT', 'ACTIVE', 'SCHEDULED', 'SENDING', 'PAUSED', 'FINISHED'] })
   status: string;
+
+  @Prop({ default: 0 })
+  currentIndex: number;
 
   // Stats Counters
   @Prop({ default: 0 })
@@ -68,6 +72,13 @@ export class CreateCampaign {
 
   @Prop()
   scheduledAt: Date;
+
+  @Prop()
+  trackingDomainId: string;
+
+  @Prop({ type: [String], default: [] })
+  selectedAccountIds: string[];
+  
 }
 
 export const CreateCampaignSchema = SchemaFactory.createForClass(CreateCampaign);

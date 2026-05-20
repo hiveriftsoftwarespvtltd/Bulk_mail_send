@@ -27,4 +27,11 @@ export class CreateCreateCampaignDto {
   @IsString()
   @IsOptional()
   status?: string;
+
+  @IsString()
+  @IsOptional()
+  trackingDomainId?: string;
+
+  @IsOptional()
+  selectedAccountIds?: string[];
 }
