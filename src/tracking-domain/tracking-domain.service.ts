@@ -1,16 +1,19 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { TrackingDomain, TrackingDomainDocument } from './schemas/tracking-domain.schema';
 import CustomResponse from 'src/provider/custom-response.service';
 import CustomError from 'src/provider/customer-error.service';
 import * as dns from 'dns';
+import { promisify } from 'util';
+
+const resolveTxt = promisify(dns.resolveTxt);
+const resolveA = promisify(dns.resolve4);
 
 @Injectable()
 export class TrackingDomainService {
-  // Default CNAME target the user should point to.
-  // Can be configured in .env as well.
-  private readonly DEFAULT_CNAME_TARGET = 'track.bulkmail.com';
+  private readonly logger = new Logger(TrackingDomainService.name);
+  private readonly DEFAULT_CNAME_TARGET = 'mailpipes.online';
 
   constructor(
     @InjectModel('TrackingDomain') private trackingDomainModel: Model<TrackingDomainDocument>,
@@ -25,28 +28,20 @@ export class TrackingDomainService {
   }
 
   async verifyAndSave(tenantId: string, emailAccountId: string, domainName: string) {
-    // 1. Verify DNS
-    let isVerified = false;
     try {
-      const records = await dns.promises.resolveCname(domainName);
-      if (records && records.length > 0) {
-        // Checking if the resolved CNAME points to our target
-        const matchesTarget = records.some(record => record.toLowerCase() === this.DEFAULT_CNAME_TARGET.toLowerCase());
-        if (matchesTarget) {
-          isVerified = true;
-        }
+      const aRecords = await resolveA(domainName);
+      if (!aRecords || aRecords.length === 0) {
+        throw new BadRequestException('Domain verification failed: No A records found');
       }
-    } catch (error) {
-      console.log(`DNS resolution failed for ${domainName}:`, error.message);
-      // DNS record doesn't exist or isn't a CNAME
-      isVerified = false;
+      const txtRecords = await resolveTxt(domainName);
+      const hasVerifiedTxt = txtRecords.some(rec => rec.includes('tracking-verified'));
+      if (!hasVerifiedTxt) {
+        this.logger?.warn && this.logger.warn(`Domain ${domainName} has no tracking-verified TXT record; proceeding with only A record check.`);
+      }
+    } catch (e) {
+      throw new BadRequestException('Domain verification error: ' + (e.message || e));
     }
 
-    if (!isVerified) {
-      throw new CustomError(400, `DNS Verification Failed. Please ensure you have added a CNAME record for '${domainName}' pointing to '${this.DEFAULT_CNAME_TARGET}' and wait for DNS propagation.`);
-    }
-
-    // 2. Save to DB
     const existingDomain = await this.trackingDomainModel.findOne({ tenantId, domainName });
     if (existingDomain) {
       existingDomain.emailAccountId = emailAccountId;

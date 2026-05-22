@@ -108,7 +108,7 @@ export class GoogleMailService {
 
   async listAccounts(tenantId: string) {
     const accounts = await this.googleMailModel.find({ tenantId });
-    return new CustomResponse(200, 'Google accounts retrieved', accounts);
+    return accounts;
   }
 
   async remove(id: string) {

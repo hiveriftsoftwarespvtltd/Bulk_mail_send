@@ -22,7 +22,7 @@ export class InboxService {
     @InjectModel(SmtpSender.name) private smtpSenderModel: Model<SmtpSenderDocument>,
     @InjectModel(GoogleMail.name) private googleMailModel: Model<GoogleMailDocument>,
     private configService: ConfigService,
-  ) {}
+  ) { }
 
   async listAllAccounts(companyId: string) {
     try {
@@ -30,17 +30,17 @@ export class InboxService {
       const googleAccounts = await this.googleMailModel.find({ tenantId: companyId }).lean();
 
       const allAccounts = [
-        ...smtpAccounts.map(acc => ({ 
-          id: acc._id, 
-          email: acc.fromEmail, 
-          type: 'SMTP', 
+        ...smtpAccounts.map(acc => ({
+          id: acc._id,
+          email: acc.fromEmail,
+          type: 'SMTP',
           name: acc.fromName,
-          connectedAt: (acc as any).createdAt 
+          connectedAt: (acc as any).createdAt
         })),
-        ...googleAccounts.map(acc => ({ 
-          id: acc._id, 
-          email: acc.email, 
-          type: 'GOOGLE', 
+        ...googleAccounts.map(acc => ({
+          id: acc._id,
+          email: acc.email,
+          type: 'GOOGLE',
           name: acc.name,
           connectedAt: (acc as any).createdAt
         })),
@@ -75,10 +75,10 @@ export class InboxService {
 
       const skip = Math.max(0, (page - 1)) * limit;
       const logs = await this.emailLogModel
-        .find({ 
-          smtpEmail: email, 
+        .find({
+          smtpEmail: email,
           companyId: companyId,
-          campaignId: { $exists: true, $ne: null } 
+          campaignId: { $exists: true, $ne: null }
         })
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -86,10 +86,10 @@ export class InboxService {
         .lean();
 
       this.logger.log(`📊 [SENT] Found ${logs.length} logs for this company/email`);
-      const total = await this.emailLogModel.countDocuments({ 
-        smtpEmail: email, 
+      const total = await this.emailLogModel.countDocuments({
+        smtpEmail: email,
         companyId: companyId,
-        campaignId: { $exists: true, $ne: null } 
+        campaignId: { $exists: true, $ne: null }
       });
 
       return new CustomResponse(200, 'Sent mails fetched', { logs, total, page, limit });
@@ -148,9 +148,9 @@ export class InboxService {
 
   async getThread(accountId: string, companyId: string, messageId: string) {
     try {
-      const originalMail = await this.emailLogModel.findOne({ 
-        messageId: { $regex: messageId.replace(/[<>]/g, ''), $options: 'i' }, 
-        companyId 
+      const originalMail = await this.emailLogModel.findOne({
+        messageId: { $regex: messageId.replace(/[<>]/g, ''), $options: 'i' },
+        companyId
       }).lean();
 
       let repliesRes: any;
@@ -179,16 +179,16 @@ export class InboxService {
     // ── GMAIL AUTO-ROUTING (Bypass IMAP) ──────────────────────────────────────
     // If the email is Gmail, try to use Gmail API (OAuth) instead of IMAP
     if (account.fromEmail?.toLowerCase().endsWith('@gmail.com')) {
-      const oauthAccount = await this.googleMailModel.findOne({ 
-        email: account.fromEmail, 
-        tenantId: account.tenantId 
+      const oauthAccount = await this.googleMailModel.findOne({
+        email: account.fromEmail,
+        tenantId: account.tenantId
       });
-      
+
       if (oauthAccount) {
         this.logger.log(`🚀 [GMAIL] Routing ${account.fromEmail} via Gmail API instead of IMAP`);
         return this.getGoogleReplies(oauthAccount, targetMessageId);
       }
-      
+
       this.logger.warn(`⚠️ [GMAIL] ${account.fromEmail} is a Gmail account but no OAuth credentials found. Falling back to IMAP (expect failure if App Password is missing).`);
     }
 
@@ -225,12 +225,12 @@ export class InboxService {
       let lock = await client.getMailboxLock('INBOX');
       const replies: any[] = [];
 
-      const sentLogs = await this.emailLogModel.find({ 
-        smtpEmail: account.fromEmail, 
+      const sentLogs = await this.emailLogModel.find({
+        smtpEmail: account.fromEmail,
         companyId: account.tenantId,
         campaignId: { $exists: true, $ne: null }
       }).select('messageId').lean();
-      
+
       const sentMessageIds = new Set(sentLogs.map(log => cleanId(log.messageId)));
 
       try {
@@ -240,44 +240,44 @@ export class InboxService {
         const range = totalMessages > 0 ? `${start}:*` : '1:*';
 
         for await (let msg of client.fetch(range, { envelope: true, source: true })) {
-           if (!msg.source) continue;
-           const parsed: any = await simpleParser(msg.source);
-           const inReplyTo = cleanId(parsed.inReplyTo);
-           const references = (Array.isArray(parsed.references) ? parsed.references : [parsed.references || ''])
-             .map(ref => cleanId(ref));
+          if (!msg.source) continue;
+          const parsed: any = await simpleParser(msg.source);
+          const inReplyTo = cleanId(parsed.inReplyTo);
+          const references = (Array.isArray(parsed.references) ? parsed.references : [parsed.references || ''])
+            .map(ref => cleanId(ref));
 
-           let isOurReply = false;
-           if (targetMessageId) {
-             const targetIdClean = cleanId(targetMessageId);
-             isOurReply = inReplyTo === targetIdClean || references.includes(targetIdClean);
-           } else {
-             isOurReply = sentMessageIds.has(inReplyTo) || references.some(ref => sentMessageIds.has(ref));
-           }
+          let isOurReply = false;
+          if (targetMessageId) {
+            const targetIdClean = cleanId(targetMessageId);
+            isOurReply = inReplyTo === targetIdClean || references.includes(targetIdClean);
+          } else {
+            isOurReply = sentMessageIds.has(inReplyTo) || references.some(ref => sentMessageIds.has(ref));
+          }
 
-            if (isOurReply) {
-              // ✅ Update original EmailLog status to REPLIED
-              const targetId = inReplyTo || (references.length > 0 ? references[0] : null);
-              if (targetId) {
-                await this.emailLogModel.updateOne(
-                  { 
-                    messageId: { $regex: targetId, $options: 'i' }, 
-                    companyId: account.tenantId,
-                    status: { $ne: 'REPLIED' } 
-                  },
-                  { $set: { status: 'REPLIED' } }
-                );
-              }
-
-              replies.push({
-                subject: parsed.subject,
-                from: parsed.from?.text,
-                date: parsed.date,
-                text: parsed.text,
-                html: parsed.html,
-                messageId: parsed.messageId,
-                inReplyTo: parsed.inReplyTo
-              });
+          if (isOurReply) {
+            // ✅ Update original EmailLog status to REPLIED
+            const targetId = inReplyTo || (references.length > 0 ? references[0] : null);
+            if (targetId) {
+              await this.emailLogModel.updateOne(
+                {
+                  messageId: { $regex: targetId, $options: 'i' },
+                  companyId: account.tenantId,
+                  status: { $ne: 'REPLIED' }
+                },
+                { $set: { status: 'REPLIED' } }
+              );
             }
+
+            replies.push({
+              subject: parsed.subject,
+              from: parsed.from?.text,
+              date: parsed.date,
+              text: parsed.text,
+              html: parsed.html,
+              messageId: parsed.messageId,
+              inReplyTo: parsed.inReplyTo
+            });
+          }
         }
       } finally {
         lock.release();
@@ -297,7 +297,7 @@ export class InboxService {
 
   private async getGoogleReplies(account: GoogleMailDocument, targetMessageId?: string) {
     const cleanId = (id: string) => id ? id.replace(/[<>]/g, '').trim().toLowerCase() : '';
-    
+
     const oauth2Client = new google.auth.OAuth2(
       this.configService.get('GOOGLE_CLIENT_ID'),
       this.configService.get('GOOGLE_CLIENT_SECRET')
@@ -307,8 +307,8 @@ export class InboxService {
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
     try {
-      const sentLogs = await this.emailLogModel.find({ 
-        smtpEmail: account.email, 
+      const sentLogs = await this.emailLogModel.find({
+        smtpEmail: account.email,
         companyId: account.tenantId,
         campaignId: { $exists: true, $ne: null }
       }).select('messageId').lean();
@@ -325,7 +325,7 @@ export class InboxService {
           const payload = detail.data.payload;
           if (!payload) return null;
           const headers = (payload.headers as any[]) || [];
-          
+
           const subject = headers.find(h => h.name === 'Subject')?.value;
           const from = headers.find(h => h.name === 'From')?.value;
           const date = headers.find(h => h.name === 'Date')?.value;
@@ -348,10 +348,10 @@ export class InboxService {
           const targetId = inReplyTo || (references.length > 0 ? references[0] : null);
           if (targetId) {
             await this.emailLogModel.updateOne(
-              { 
-                messageId: { $regex: targetId, $options: 'i' }, 
+              {
+                messageId: { $regex: targetId, $options: 'i' },
                 companyId: account.tenantId,
-                status: { $ne: 'REPLIED' } 
+                status: { $ne: 'REPLIED' }
               },
               { $set: { status: 'REPLIED' } }
             );

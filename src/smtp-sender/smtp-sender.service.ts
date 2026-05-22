@@ -20,7 +20,7 @@ export class SmtpSenderService {
     @InjectModel(GoogleMail.name)
     private googleMailModel: Model<GoogleMail>,
     private mailService: MailService,
-  ) {}
+  ) { }
 
   async create(dto: any, tenantId: string) {
     try {
@@ -34,7 +34,7 @@ export class SmtpSenderService {
   async findAll(tenantId: string) {
     try {
       const data = await this.model.find({ tenantId }).sort({ createdAt: -1 });
-      return new CustomResponse(200, 'SMTP configurations fetched successfully', data);
+      return data;
     } catch (error) {
       throwException(new CustomError(error.status || 500, error.message));
     }
@@ -61,7 +61,7 @@ export class SmtpSenderService {
       // Combine both
       const allAccounts = [...smtpFormatted, ...googleFormatted];
 
-      return new CustomResponse(200, 'All email accounts fetched successfully', allAccounts);
+      return allAccounts;
     } catch (error) {
       throwException(new CustomError(error.status || 500, error.message));
     }
@@ -112,7 +112,7 @@ export class SmtpSenderService {
   // 🔥 SEND EMAIL (VIA DB CONFIG)
   async sendMail(
     id: string,
-    tenantId:string,
+    tenantId: string,
     payload: SendMailDto,
   )
   async sendMail(
@@ -125,7 +125,7 @@ export class SmtpSenderService {
         throw new Error('Mail payload "to" is missing');
       }
       const config = await this.findOneInternal(id, tenantId);
-      
+
       const result = await this.executeSend(
         {
           host: config.smtpHost,
@@ -150,7 +150,7 @@ export class SmtpSenderService {
       if (!dto || !dto.smtpConfig) {
         throw new Error('Invalid request: smtpConfig is missing in the body.');
       }
-      
+
       const result = await this.executeSend(
         {
           ...dto.smtpConfig,
@@ -180,11 +180,11 @@ export class SmtpSenderService {
       if (!host || !user || !pass) {
         throw new Error(`Missing SMTP details: host=${host}, user=${user}`);
       }
-      const transporter = nodemailer.createTransport({ 
+      const transporter = nodemailer.createTransport({
         host: host,
         port: port,
         secure: port === 465,
-      
+
         auth: {
           user: user,
           pass: pass,
@@ -217,7 +217,7 @@ export class SmtpSenderService {
       return res?.data; // Return the log object
     } catch (error) {
       this.logger.error(`Failed to send email to: ${payload.to}`);
-      
+
       if (error.message.includes('534-5.7.9')) {
         this.logger.error('CRITICAL: Google "WebLoginRequired" detected.');
         this.logger.error('FIX: You MUST use a Google "App Password", not your normal password.');
@@ -225,7 +225,7 @@ export class SmtpSenderService {
       } else {
         this.logger.error(`Error details: ${error.message}`);
       }
-    
+
       throw error;
     }
   }
