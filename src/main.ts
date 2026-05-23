@@ -1,4 +1,5 @@
 import * as dns from 'dns';
+
 if (dns.setDefaultResultOrder) {
   dns.setDefaultResultOrder('ipv4first');
 }
@@ -13,21 +14,19 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT') || 9000;
-  const frontendUrl = configService.get<string>('FRONTEND_URL');
 
-  const allowedOrigins = [
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-];
-if (frontendUrl) {
-  allowedOrigins.push(frontendUrl);
-}
-app.enableCors({
-  origin: allowedOrigins,
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-});
+  app.enableCors({
+    origin: [
+      'http://localhost:5173',
+      'http://127.0.0.1:5173',
+      'https://mailpipes.online',
+      'https://www.mailpipes.online',
+      'https://app.mailpipes.online',
+    ],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -36,8 +35,8 @@ app.enableCors({
     }),
   );
 
-  await app.listen(port);
-  console.log(`Application is running on: http://localhost:${port}`);
+  await app.listen(port, '0.0.0.0');
+  console.log(`Application is running on port: ${port}`);
 }
 
 bootstrap();

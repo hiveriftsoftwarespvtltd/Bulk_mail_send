@@ -42,6 +42,10 @@ export class SmtpSenderService {
 
   async listAllAccounts(tenantId: string) {
     try {
+      if (!tenantId || tenantId === 'undefined') {
+        throwException(new CustomError(400, 'Workspace not found. Please log in again.'));
+      }
+
       // Fetch SMTP accounts
       const smtpAccounts = await this.model.find({ tenantId }).lean();
       const smtpFormatted = smtpAccounts.map(acc => ({
@@ -50,8 +54,11 @@ export class SmtpSenderService {
         displayName: acc.fromEmail || acc.userName
       }));
 
-      // Fetch Google accounts
-      const googleAccounts = await this.googleMailModel.find({ tenantId }).lean();
+      // Fetch Google accounts (no tokens in list)
+      const googleAccounts = await this.googleMailModel
+        .find({ tenantId })
+        .select('-accessToken -refreshToken')
+        .lean();
       const googleFormatted = googleAccounts.map(acc => ({
         ...acc,
         type: 'GOOGLE',
@@ -61,7 +68,7 @@ export class SmtpSenderService {
       // Combine both
       const allAccounts = [...smtpFormatted, ...googleFormatted];
 
-      return allAccounts;
+      return new CustomResponse(200, 'All accounts fetched successfully', allAccounts);
     } catch (error) {
       throwException(new CustomError(error.status || 500, error.message));
     }
