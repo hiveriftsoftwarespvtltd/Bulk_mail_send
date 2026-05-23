@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, Delete, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Body, Param, Delete, UseGuards, Request, Query } from '@nestjs/common';
 import { TrackingDomainService } from './tracking-domain.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateTrackingDomainDto } from './dto/create-tracking-domain.dto';
@@ -7,6 +7,11 @@ import { CreateTrackingDomainDto } from './dto/create-tracking-domain.dto';
 @UseGuards(JwtAuthGuard)
 export class TrackingDomainController {
   constructor(private readonly trackingDomainService: TrackingDomainService) {}
+
+  @Get('test-dns')
+  testDns(@Query('domain') domain: string) {
+    return this.trackingDomainService.testDns(domain);
+  }
 
   @Get('generate-cname')
   getGenerateCname() {
@@ -37,4 +42,5 @@ export class TrackingDomainController {
     const tenantId = req.user.companyId;
     return this.trackingDomainService.remove(id, tenantId);
   }
+
 }

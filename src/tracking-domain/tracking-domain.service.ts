@@ -17,7 +17,9 @@ export class TrackingDomainService {
 
   constructor(
     @InjectModel('TrackingDomain') private trackingDomainModel: Model<TrackingDomainDocument>,
-  ) {}
+  ) {
+    dns.setServers(['8.8.8.8', '1.1.1.1']);
+  }
 
   getGenerateCname() {
     return new CustomResponse(200, 'CNAME details fetched successfully', {
@@ -75,4 +77,17 @@ export class TrackingDomainService {
     }
     return new CustomResponse(200, 'Tracking domain deleted successfully', null);
   }
+
+
+  // New method to test DNS resolution on the server
+  async testDns(domainName: string) {
+    try {
+      const aRecords = await resolveA(domainName);
+      const txtRecords = await resolveTxt(domainName);
+      return { aRecords, txtRecords };
+    } catch (e) {
+      throw new BadRequestException('DNS test error: ' + (e.message || e));
+    }
+  }
 }
+
