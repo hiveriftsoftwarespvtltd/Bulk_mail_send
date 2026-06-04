@@ -255,17 +255,26 @@ export class InboxService {
           }
 
           if (isOurReply) {
-            // ✅ Update original EmailLog status to REPLIED
+            // ✅ Update original EmailLog status to REPLIED and increment campaign replied counter
             const targetId = inReplyTo || (references.length > 0 ? references[0] : null);
             if (targetId) {
-              await this.emailLogModel.updateOne(
+              const logToUpdate = await this.emailLogModel.findOneAndUpdate(
                 {
                   messageId: { $regex: targetId, $options: 'i' },
                   companyId: account.tenantId,
                   status: { $ne: 'REPLIED' }
                 },
-                { $set: { status: 'REPLIED' } }
+                { $set: { status: 'REPLIED' } },
+                { new: true }
               );
+
+              if (logToUpdate && logToUpdate.campaignId) {
+                await this.emailLogModel.db.model('CreateCampaign').updateOne(
+                  { _id: logToUpdate.campaignId },
+                  { $inc: { replied: 1 } }
+                );
+                this.logger.log(`📈 Incremented replied counter for campaign: ${logToUpdate.campaignId}`);
+              }
             }
 
             replies.push({
@@ -302,7 +311,23 @@ export class InboxService {
       this.configService.get('GOOGLE_CLIENT_ID'),
       this.configService.get('GOOGLE_CLIENT_SECRET')
     );
-    oauth2Client.setCredentials({ access_token: account.accessToken, refresh_token: account.refreshToken });
+    oauth2Client.setCredentials({ refresh_token: account.refreshToken });
+
+    try {
+      const { token } = await oauth2Client.getAccessToken();
+      if (token) {
+        oauth2Client.setCredentials({ access_token: token, refresh_token: account.refreshToken });
+        await this.googleMailModel.updateOne(
+          { _id: account._id },
+          { $set: { accessToken: token } }
+        );
+      } else {
+        oauth2Client.setCredentials({ access_token: account.accessToken, refresh_token: account.refreshToken });
+      }
+    } catch (err) {
+      this.logger.error(`Failed to refresh Google token during reply fetch for ${account.email}: ${err.message}`);
+      oauth2Client.setCredentials({ access_token: account.accessToken, refresh_token: account.refreshToken });
+    }
 
     const gmail = google.gmail({ version: 'v1', auth: oauth2Client });
 
@@ -326,12 +351,14 @@ export class InboxService {
           if (!payload) return null;
           const headers = (payload.headers as any[]) || [];
 
-          const subject = headers.find(h => h.name === 'Subject')?.value;
-          const from = headers.find(h => h.name === 'From')?.value;
-          const date = headers.find(h => h.name === 'Date')?.value;
-          const msgId = headers.find(h => h.name === 'Message-ID')?.value;
-          const inReplyTo = cleanId(headers.find(h => h.name === 'In-Reply-To')?.value);
-          const referencesRaw = headers.find(h => h.name === 'References')?.value || '';
+          const findHeader = (name: string) => headers.find(h => h.name?.toLowerCase() === name.toLowerCase())?.value;
+
+          const subject = findHeader('Subject');
+          const from = findHeader('From');
+          const date = findHeader('Date');
+          const msgId = findHeader('Message-ID');
+          const inReplyTo = cleanId(findHeader('In-Reply-To'));
+          const referencesRaw = findHeader('References') || '';
           const references = referencesRaw.split(/\s+/).map(ref => cleanId(ref)).filter(id => id.length > 0);
 
           let isOurReply = false;
@@ -344,17 +371,26 @@ export class InboxService {
 
           if (!isOurReply) return null;
 
-          // ✅ Update original EmailLog status to REPLIED
+          // ✅ Update original EmailLog status to REPLIED and increment campaign replied counter
           const targetId = inReplyTo || (references.length > 0 ? references[0] : null);
           if (targetId) {
-            await this.emailLogModel.updateOne(
+            const logToUpdate = await this.emailLogModel.findOneAndUpdate(
               {
                 messageId: { $regex: targetId, $options: 'i' },
                 companyId: account.tenantId,
                 status: { $ne: 'REPLIED' }
               },
-              { $set: { status: 'REPLIED' } }
+              { $set: { status: 'REPLIED' } },
+              { new: true }
             );
+
+            if (logToUpdate && logToUpdate.campaignId) {
+              await this.emailLogModel.db.model('CreateCampaign').updateOne(
+                { _id: logToUpdate.campaignId },
+                { $inc: { replied: 1 } }
+              );
+              this.logger.log(`📈 Incremented replied counter for campaign: ${logToUpdate.campaignId}`);
+            }
           }
 
           return {

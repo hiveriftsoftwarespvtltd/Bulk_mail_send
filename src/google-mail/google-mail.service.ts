@@ -189,6 +189,35 @@ export class GoogleMailService {
     }
   }
 
+  async verifyGoogleConnection(id: string, tenantId: string) {
+    this.assertValidTenantId(tenantId);
+
+    const account = await this.googleMailModel.findOne({ _id: id, tenantId });
+    if (!account) {
+      throwException(new CustomError(404, 'Google account not found'));
+      throw new Error('Google account not found');
+    }
+
+    const clientId = this.configService.get<string>('GOOGLE_CLIENT_ID');
+    const clientSecret = this.configService.get<string>('GOOGLE_CLIENT_SECRET');
+
+    const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
+    oauth2Client.setCredentials({ refresh_token: account.refreshToken });
+
+    try {
+      const { token } = await oauth2Client.getAccessToken();
+      if (!token) {
+        throw new Error('Failed to retrieve access token.');
+      }
+      return new CustomResponse(200, 'Google account is connected and valid', { status: 'connected', email: account.email });
+    } catch (error: any) {
+      this.logger.error(`Google Mail connection check failed for ${account.email}: ${error.message}`);
+      throwException(
+        new CustomError(400, `Google connection invalid or expired: ${error.message}. Please delete and reconnect this account.`)
+      );
+    }
+  }
+
   async listAccounts(tenantId: string) {
     this.assertValidTenantId(tenantId);
 

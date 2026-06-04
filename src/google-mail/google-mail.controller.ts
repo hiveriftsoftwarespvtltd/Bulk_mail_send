@@ -89,6 +89,16 @@ export class GoogleMailController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get(':id/verify')
+  async verifyConnection(@Param('id') id: string, @Request() req) {
+    const tenantId = req.user?.companyId;
+    if (!tenantId) {
+      throw new BadRequestException('Workspace not found. Please log in again.');
+    }
+    return this.googleMailService.verifyGoogleConnection(id, tenantId);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Delete(':id')
   async remove(@Param('id') id: string, @Request() req) {
     const tenantId = req.user?.companyId;

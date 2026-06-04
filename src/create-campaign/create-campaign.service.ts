@@ -554,6 +554,12 @@ export class CreateCampaignService {
 
         console.log(`✅ Fresh Access Token obtained for ${config.email}`);
 
+        // Save the fresh token to database to keep the account updated
+        await this.googleMailModel.updateOne(
+          { _id: config._id },
+          { $set: { accessToken: token } }
+        );
+
         const transporter = nodemailer.createTransport({
           service: 'gmail',
           auth: {

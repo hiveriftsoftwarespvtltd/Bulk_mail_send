@@ -22,8 +22,58 @@ export class SmtpSenderService {
     private mailService: MailService,
   ) { }
 
+  private async verifySmtpConnection(config: any) {
+    const host = config.smtpHost;
+    const port = config.smtpPort;
+    const user = config.userName;
+    const pass = config.password;
+
+    if (!host || !user || !pass) {
+      throw new CustomError(400, 'Missing SMTP configuration details (host, username, password)');
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: host,
+      port: port,
+      secure: port === 465,
+      auth: {
+        user: user.trim(),
+        pass: pass.trim(),
+      },
+      tls: {
+        rejectUnauthorized: false,
+      },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+    } as any);
+
+    try {
+      await transporter.verify();
+    } catch (error: any) {
+      this.logger.error(`SMTP Connection verification failed for ${user}: ${error.message}`);
+      let userFriendlyMessage = error.message;
+
+      if (
+        error.message.includes('535') || 
+        error.message.includes('BadCredentials') || 
+        error.message.toLowerCase().includes('username and password not accepted')
+      ) {
+        if (host.toLowerCase().includes('gmail') || user.toLowerCase().endsWith('@gmail.com')) {
+          userFriendlyMessage = `Invalid credentials. Gmail SMTP requires a 16-character App Password (NOT your normal Gmail password). Please enable 2-Step Verification and generate an App Password in your Google Account settings under Security.`;
+        } else {
+          userFriendlyMessage = `Invalid credentials: Username or password not accepted by the SMTP server.`;
+        }
+      } else if (error.message.includes('ETIMEDOUT') || error.message.includes('ENOTFOUND')) {
+        userFriendlyMessage = `Connection timed out or host not found. Please verify the SMTP Host (${host}) and SMTP Port (${port}).`;
+      }
+
+      throw new CustomError(400, `SMTP connection failed: ${userFriendlyMessage}`);
+    }
+  }
+
   async create(dto: any, tenantId: string) {
     try {
+      await this.verifySmtpConnection(dto);
       const data = await this.model.create({ ...dto, tenantId });
       return new CustomResponse(201, 'SMTP configuration created successfully', data);
     } catch (error) {
@@ -93,6 +143,26 @@ export class SmtpSenderService {
 
   async update(id: string, dto: any, tenantId: string) {
     try {
+      const existing = await this.model.findOne({ _id: id, tenantId });
+      if (!existing) throw new NotFoundException('Not found');
+
+      const mergedConfig = {
+        smtpHost: dto.smtpHost !== undefined ? dto.smtpHost : existing.smtpHost,
+        smtpPort: dto.smtpPort !== undefined ? dto.smtpPort : existing.smtpPort,
+        userName: dto.userName !== undefined ? dto.userName : existing.userName,
+        password: dto.password !== undefined ? dto.password : existing.password,
+      };
+
+      const connectionDetailsChanged = 
+        (dto.smtpHost !== undefined && dto.smtpHost !== existing.smtpHost) ||
+        (dto.smtpPort !== undefined && dto.smtpPort !== existing.smtpPort) ||
+        (dto.userName !== undefined && dto.userName !== existing.userName) ||
+        (dto.password !== undefined && dto.password !== existing.password);
+
+      if (connectionDetailsChanged) {
+        await this.verifySmtpConnection(mergedConfig);
+      }
+
       const updated = await this.model.findOneAndUpdate(
         { _id: id, tenantId },
         dto,

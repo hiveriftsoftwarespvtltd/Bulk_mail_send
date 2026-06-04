@@ -25,13 +25,12 @@ export class TrackingController {
   private isBot(userAgent: string): boolean {
     if (!userAgent) return false;
     const bots = [
-      'bot', 'crawler', 'spider', 'google', 'bing', 'yahoo', 'preview', 'scanner',
-      'monitoring', 'validator', 'checker', 'facebook', 'twitter', 'linkedin',
-      'slack', 'discord', 'telegram', 'whatsapp', 'outlook-android', 'outlook-ios',
-      'gmail', 'protonmail', 'apple-mail', 'fire-fox-preview', 'headless', 
-      'chrome-lighthouse', 'gsa-crawler', 'embedly', 'quora', 'pinterest', 
-      'outbrain', 'vkshare', 'getpocket', 'flipboard', 'instapaper', 'buffer',
-      'baiduspider', 'yandexbot', 'duckduckbot', 'facebot', 'ia_archiver'
+      'googlebot', 'bingbot', 'yandexbot', 'baiduspider', 'duckduckbot',
+      'bot', 'crawler', 'spider', 'scanner', 'headless', 'chrome-lighthouse',
+      'gsa-crawler', 'monitoring', 'validator', 'checker',
+      'facebookexternalhit', 'twitterbot', 'linkedinbot', 'pinterestbot',
+      'slackbot', 'discordbot', 'telegrambot', 'whatsapp', 'preview', 'embedly',
+      'headless', 'lighthouse'
     ];
     const ua = userAgent.toLowerCase();
     return bots.some(bot => ua.includes(bot));
