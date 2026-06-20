@@ -25,7 +25,7 @@ export class MailService {
     subject: string,
     message: string,
     companyId: string,
-    provider: 'SMTP' | 'GOOGLE' = 'SMTP',
+    provider: 'SMTP' | 'GOOGLE' | 'OUTLOOK' = 'SMTP',
     fromName?: string,
     replyTo?: string,
     customDomain?: string,
@@ -39,7 +39,9 @@ export class MailService {
 
     // Use custom domain if provided, otherwise fallback to backendUrl
     // We assume customDomain is just the host (e.g. track.example.com)
-    const trackingBaseUrl = customDomain ? `http://${customDomain}` : backendUrl;
+    const trackingBaseUrl = customDomain
+      ? (backendUrl.startsWith('https') ? `https://${customDomain}` : `http://${customDomain}`)
+      : backendUrl;
 
     // 1. Inject Tracking Pixel at the TOP of the body for better reliability
     const pixelTag = `<img src="${trackingBaseUrl}/track/open/${trackingId}" width="1" height="1" style="display:none;" />`;
@@ -52,13 +54,52 @@ export class MailService {
     });
 
     try {
-      const info = await transporter.sendMail({
-        from: fromName ? `"${fromName}" <${smtpUser}>` : smtpUser,
-        to: recipient,
-        subject,
-        html: htmlMessage,
-        replyTo: replyTo || smtpUser,
-      });
+      let messageId = '';
+
+      if (provider === 'OUTLOOK') {
+        const accessToken = transporter as any;
+        const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            message: {
+              subject,
+              body: {
+                contentType: 'HTML',
+                content: htmlMessage,
+              },
+              toRecipients: [
+                {
+                  emailAddress: {
+                    address: recipient,
+                  },
+                },
+              ],
+            },
+            saveToSentItems: 'true'
+          }),
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Graph API Send Failed: ${response.status} - ${errText}`);
+        }
+
+        const clientReqId = response.headers.get('client-request-id') || uuidv4();
+        messageId = `<${clientReqId}@outlook.com>`;
+      } else {
+        const info = await transporter.sendMail({
+          from: fromName ? `"${fromName}" <${smtpUser}>` : smtpUser,
+          to: recipient,
+          subject,
+          html: htmlMessage,
+          replyTo: replyTo || smtpUser,
+        });
+        messageId = info.messageId;
+      }
 
       const log = await this.emailModel.create({
         smtpEmail: smtpUser,
@@ -68,12 +109,12 @@ export class MailService {
         status: 'SENT',
         trackingId,
         companyId,
-        messageId: info.messageId,
+        messageId,
         provider,
         campaignId,
       });
 
-      this.logger.log(`Email sent to ${recipient} (Message-ID: ${info.messageId})`);
+      this.logger.log(`Email sent to ${recipient} (Message-ID: ${messageId})`);
       return new CustomResponse(200, `Email sent to ${recipient}`, log);
     } catch (error) {
       this.logger.error(`Failed to send email to ${recipient}: ${error.message}`);

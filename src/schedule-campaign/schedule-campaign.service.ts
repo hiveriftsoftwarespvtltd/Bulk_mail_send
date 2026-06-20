@@ -31,13 +31,10 @@ export class ScheduleCampaignService {
         maxLeadsPerDay: dto.maxLeadsPerDay,
       };
 
-      // ✅ UPSERT: Each user has only ONE schedule document.
-      // This prevents stale/duplicate schedules from accumulating and
-      // causing the wrong interval to be picked when a campaign starts.
       const result = await this.model.findOneAndUpdate(
         { userId },
         { $set: data },
-        { upsert: true, returnDocument: 'after', new: true },
+        { upsert: true, returnDocument: 'after' },
       );
       return new CustomResponse(201, 'Schedule saved successfully', result);
     } catch (error) {
@@ -66,7 +63,7 @@ export class ScheduleCampaignService {
       throwException(new CustomError(error.status || 404, error.message));
     }
   }
-
+  
   async update(id: string, userId: string, dto: UpdateScheduleCampaignDto) {
     try {
       const updateData: any = {

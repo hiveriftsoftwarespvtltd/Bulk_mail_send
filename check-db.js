@@ -25,6 +25,27 @@ async function check() {
       console.log(`ID: ${acc._id} | Email: ${acc.email} | TenantID: ${acc.tenantId}`);
     });
 
+    console.log('\n--- OUTLOOK ACCOUNTS ---');
+    const outlookCollection = db.collection('outlookmails');
+    const outlookAccounts = await outlookCollection.find({}).toArray();
+    console.log(`Found ${outlookAccounts.length} Outlook accounts.`);
+    outlookAccounts.forEach(acc => {
+      console.log(`ID: ${acc._id} | Email: ${acc.email} | TenantID: ${acc.tenantId}`);
+    });
+
+    console.log('\n--- DATABASES ---');
+    const adminDb = client.db().admin();
+    const dbs = await adminDb.listDatabases();
+    dbs.databases.forEach(dbInfo => console.log(dbInfo.name));
+
+    console.log('\n--- DETAILED GOOGLE ACCOUNT ---');
+    const acc = await googleCollection.findOne({});
+    if (acc) {
+      console.log(JSON.stringify(acc, null, 2));
+    } else {
+      console.log('No Google account found.');
+    }
+
   } catch (err) {
     console.error('Error:', err.message);
   } finally {
@@ -33,3 +54,4 @@ async function check() {
 }
 
 check();
+

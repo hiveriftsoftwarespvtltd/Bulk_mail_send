@@ -46,7 +46,7 @@ export class GoogleMailService {
 
   private resolveFrontendUrl(candidate?: string): string {
     const fromEnv = this.configService.get<string>('FRONTEND_URL')?.trim();
-    const fallback = fromEnv || 'https://mailpipes.online';
+    const fallback = fromEnv || 'http://localhost:5174';
     const url = (candidate?.trim() || fallback).replace(/\/$/, '');
     return url;
   }

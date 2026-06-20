@@ -60,7 +60,7 @@ export class TrackingController {
               device: device
             } 
           },
-          { new: true }
+          { returnDocument: 'after' as any }
         );
 
         if (log && log.campaignId) {
@@ -120,7 +120,7 @@ export class TrackingController {
             $set: updateData,
             $setOnInsert: { openedAt: new Date() } 
           },
-          { new: true }
+          { returnDocument: 'after' as any }
         );
 
         // Explicitly set openedAt if it was still SENT

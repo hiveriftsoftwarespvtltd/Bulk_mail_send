@@ -29,7 +29,7 @@ export class EmailLog {
   @Prop()
   messageId: string;
 
-  @Prop({ enum: ['SMTP', 'GOOGLE'], default: 'SMTP' })
+  @Prop({ enum: ['SMTP', 'GOOGLE', 'OUTLOOK'], default: 'SMTP' })
   provider: string;
 
   @Prop()

@@ -6,6 +6,7 @@ import { EmailLog, EmailLogDocument } from '../logs/schemas/email-log.schema';
 import { SmtpSender, SmtpSenderDocument } from '../smtp-sender/entities/smtp-sender.entity';
 import { User, UserDocument } from '../auth/schemas/user.schema';
 import { GoogleMail, GoogleMailDocument } from '../google-mail/entities/google-mail.entity';
+import { OutlookMail, OutlookMailDocument } from '../outlook-mail/entities/outlook-mail.entity';
 import { throwException } from 'src/util/util/errorhandling';
 import CustomError from 'src/provider/customer-error.service';
 import CustomResponse from 'src/provider/custom-response.service';
@@ -18,6 +19,7 @@ export class DashboardService {
     @InjectModel(SmtpSender.name) private smtpSenderModel: Model<SmtpSenderDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     @InjectModel(GoogleMail.name) private googleMailModel: Model<GoogleMailDocument>,
+    @InjectModel(OutlookMail.name) private outlookMailModel: Model<OutlookMailDocument>,
   ) { }
 
   async getStats(userId: string, companyId: string) {
@@ -31,6 +33,7 @@ export class DashboardService {
         clickedEmails,
         totalSmtp,
         totalGoogle,
+        totalOutlook,
         totalReplies,
       ] = await Promise.all([
         this.userModel.countDocuments({ companyId }),
@@ -45,6 +48,7 @@ export class DashboardService {
         this.emailLogModel.countDocuments({ companyId, status: 'CLICKED' }),
         this.smtpSenderModel.countDocuments({ tenantId: companyId }),
         this.googleMailModel.countDocuments({ tenantId: companyId }),
+        this.outlookMailModel.countDocuments({ tenantId: companyId }),
         this.emailLogModel.countDocuments({ companyId, status: 'REPLIED' }),
       ]);
 
@@ -73,9 +77,10 @@ export class DashboardService {
         },
 
         smtp: {
-          totalConfigured: totalSmtp + totalGoogle,
+          totalConfigured: totalSmtp + totalGoogle + totalOutlook,
           smtpCount: totalSmtp,
           googleCount: totalGoogle,
+          outlookCount: totalOutlook,
         },
       };
 

@@ -24,7 +24,7 @@ export class GoogleMailController {
   private defaultFrontendUrl(): string {
     return (
       this.configService.get<string>('FRONTEND_URL')?.replace(/\/$/, '') ||
-      'https://mailpipes.online'
+      'http://localhost:5174'
     );
   }
 

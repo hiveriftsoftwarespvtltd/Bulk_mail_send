@@ -17,6 +17,7 @@ import { BullModule } from '@nestjs/bull';
 import { GoogleMailModule } from './google-mail/google-mail.module';
 import { TrackingDomainModule } from './tracking-domain/tracking-domain.module';
 import { InboxModule } from './inbox/inbox.module';
+import { OutlookMailModule } from './outlook-mail/outlook-mail.module';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { InboxModule } from './inbox/inbox.module';
     GoogleMailModule,
     TrackingDomainModule,
     InboxModule,
+    OutlookMailModule,
   ],
 })
 export class AppModule {}

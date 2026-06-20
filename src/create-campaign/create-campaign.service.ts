@@ -6,6 +6,8 @@ import { SmtpSender } from '../smtp-sender/entities/smtp-sender.entity';
 import { ScheduleCampaign, ScheduleCampaignDocument } from '../schedule-campaign/entities/schedule-campaign.entity';
 import { EmailLog, EmailLogDocument } from '../logs/schemas/email-log.schema';
 import { GoogleMail, GoogleMailDocument } from '../google-mail/entities/google-mail.entity';
+import { OutlookMail, OutlookMailDocument } from '../outlook-mail/entities/outlook-mail.entity';
+import { OutlookMailService } from '../outlook-mail/outlook-mail.service';
 import { TrackingDomain, TrackingDomainDocument } from '../tracking-domain/schemas/tracking-domain.schema';
 import { ConfigService } from '@nestjs/config';
 import { Model } from 'mongoose';
@@ -33,12 +35,15 @@ export class CreateCampaignService {
     private scheduleModel: Model<ScheduleCampaignDocument>,
     @InjectModel(GoogleMail.name)
     private googleMailModel: Model<GoogleMailDocument>,
+    @InjectModel(OutlookMail.name)
+    private outlookMailModel: Model<OutlookMailDocument>,
     @InjectModel('TrackingDomain')
     private trackingDomainModel: Model<TrackingDomainDocument>,
     @InjectQueue('campaign')
     private campaignQueue: Queue,
     private mailService: MailService,
     private configService: ConfigService,
+    private outlookMailService: OutlookMailService,
   ) { }
 
   // ✅ BUILT-IN ROBUST PATH RESOLVER
@@ -339,6 +344,51 @@ export class CreateCampaignService {
         
         return new CustomResponse(200, `Test email sent successfully via Google OAuth from ${googleConfig.email}`, result);
       }
+
+      // 3. Try to find Outlook account
+      const outlookQuery = isValidObjectId
+        ? { _id: accountId, tenantId: workspaceId }
+        : { email: accountId, tenantId: workspaceId };
+
+      const outlookConfig = await this.outlookMailModel.findOne(outlookQuery);
+
+      if (outlookConfig) {
+        console.log(`🛠️ Preparing Outlook Test for: ${outlookConfig.email}`);
+        const accessToken = await this.outlookMailService.refreshAccessToken(outlookConfig.refreshToken);
+
+        const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            message: {
+              subject: mailSubject,
+              body: {
+                contentType: 'HTML',
+                content: mailBody,
+              },
+              toRecipients: [
+                {
+                  emailAddress: {
+                    address: destinationEmail,
+                  },
+                },
+              ],
+            },
+            saveToSentItems: 'true'
+          }),
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`Graph API Send Failed: ${response.status} - ${errText}`);
+        }
+
+        return new CustomResponse(200, `Test email sent successfully via Outlook from ${outlookConfig.email}`, null);
+      }
+
       throw new NotFoundException(`Account configuration not found for: ${accountId}`);
     } catch (error) {
       throwException(new CustomError(error.status || 500, error.message));
@@ -424,27 +474,30 @@ export class CreateCampaignService {
       } else {
         // Fallback to all available accounts
         console.log(`No accounts specified and no saved selection. Fetching all available accounts for workspace: ${workspaceId}`);
-        const [smtpConfigs, googleConfigs] = await Promise.all([
+        const [smtpConfigs, googleConfigs, outlookConfigs] = await Promise.all([
           this.smtpSenderModel.find({ tenantId: workspaceId }),
-          this.googleMailModel.find({ tenantId: workspaceId })
+          this.googleMailModel.find({ tenantId: workspaceId }),
+          this.outlookMailModel.find({ tenantId: workspaceId })
         ]);
         targetAccountIds = [
           ...smtpConfigs.map(c => (c as any)._id.toString()),
-          ...googleConfigs.map(c => (c as any)._id.toString())
+          ...googleConfigs.map(c => (c as any)._id.toString()),
+          ...outlookConfigs.map(c => (c as any)._id.toString())
         ];
       }
 
-      const [smtpConfigs, googleConfigs] = await Promise.all([
+      const [smtpConfigs, googleConfigs, outlookConfigs] = await Promise.all([
         this.smtpSenderModel.find({ _id: { $in: targetAccountIds }, tenantId: workspaceId }),
-        this.googleMailModel.find({ _id: { $in: targetAccountIds }, tenantId: workspaceId })
+        this.googleMailModel.find({ _id: { $in: targetAccountIds }, tenantId: workspaceId }),
+        this.outlookMailModel.find({ _id: { $in: targetAccountIds }, tenantId: workspaceId })
       ]);
 
-      if (smtpConfigs.length === 0 && googleConfigs.length === 0) {
-        console.error(`❌ No valid SMTP or Google configurations found for IDs: ${targetAccountIds} in workspace: ${workspaceId}`);
-        throw new NotFoundException(`No valid sender accounts found. Please ensure you have at least one SMTP or Google account added.`);
+      if (smtpConfigs.length === 0 && googleConfigs.length === 0 && outlookConfigs.length === 0) {
+        console.error(`❌ No valid SMTP, Google, or Outlook configurations found for IDs: ${targetAccountIds} in workspace: ${workspaceId}`);
+        throw new NotFoundException(`No valid sender accounts found. Please ensure you have at least one SMTP, Google, or Outlook account added.`);
       }
 
-      console.log(`✅ Found ${smtpConfigs.length} SMTP and ${googleConfigs.length} Google Config(s). Preparing...`);
+      console.log(`✅ Found ${smtpConfigs.length} SMTP, ${googleConfigs.length} Google, and ${outlookConfigs.length} Outlook Config(s). Preparing...`);
 
       let delayMs = 0;
       if (scheduledAt) {
@@ -507,9 +560,10 @@ export class CreateCampaignService {
     }
 
     // Fetch fresh configs from DB
-    const [smtpConfigs, googleConfigs] = await Promise.all([
+    const [smtpConfigs, googleConfigs, outlookConfigs] = await Promise.all([
       this.smtpSenderModel.find({ _id: { $in: accountIds }, tenantId: workspaceId }).lean(),
-      this.googleMailModel.find({ _id: { $in: accountIds }, tenantId: workspaceId }).lean()
+      this.googleMailModel.find({ _id: { $in: accountIds }, tenantId: workspaceId }).lean(),
+      this.outlookMailModel.find({ _id: { $in: accountIds }, tenantId: workspaceId }).lean()
     ]);
 
     // ✅ Resolve Tracking Domain:
@@ -532,9 +586,33 @@ export class CreateCampaignService {
     }
 
     const customTrackingDomain = trackingDomain?.domainName;
-    console.log(`🛠️ Job resolution: Found ${smtpConfigs.length} SMTP and ${googleConfigs.length} Google accounts. Tracking Domain: ${customTrackingDomain || 'Default'}`);
+    console.log(`🛠️ Job resolution: Found ${smtpConfigs.length} SMTP, ${googleConfigs.length} Google, and ${outlookConfigs.length} Outlook accounts. Tracking Domain: ${customTrackingDomain || 'Default'}`);
 
     const accounts: any[] = [];
+
+    // Create Outlook Graph clients (Prioritize Outlook/Google)
+    for (const config of outlookConfigs) {
+      console.log(`🛠️ Attempting manual token refresh for Outlook: ${config.email}`);
+      try {
+        const freshToken = await this.outlookMailService.refreshAccessToken(config.refreshToken);
+        if (!freshToken) {
+          throw new Error('Failed to obtain fresh access token from Microsoft.');
+        }
+
+        console.log(`✅ Fresh Access Token obtained for Outlook: ${config.email}`);
+
+        accounts.push({
+          config,
+          transporter: freshToken, // pass accessToken in place of transporter
+          type: 'OUTLOOK',
+          fromEmail: config.email,
+          fromName: config.name,
+          replyTo: config.email
+        });
+      } catch (error) {
+        console.error(`❌ Outlook Auth Failed for ${config.email}: ${error.message}`);
+      }
+    }
 
     // Create Google OAuth transporters (Prioritize Google)
     for (const config of googleConfigs) {
@@ -623,6 +701,7 @@ export class CreateCampaignService {
 
     if (accounts.length === 0) {
       console.error(`❌ Job Failed: No valid accounts could be initialized.`);
+      await this.campaignModel.findByIdAndUpdate(campaignId, { status: 'PAUSED' });
       return;
     }
 

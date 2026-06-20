@@ -82,11 +82,12 @@ export class CreateCampaignController {
   @Post(':id/start')
   async startCampaign(
     @Param('id') id: string,
-    @Body() body: { smtpAccountId: string | string[]; delayMinutes?: number; scheduledAt?: string },
+    @Body() body: { selectedAccountIds?: string[]; smtpAccountId?: string | string[]; delayMinutes?: number; scheduledAt?: string },
     @Request() req: any
   ) {
     const workspaceId = req.user?.companyId || 'default-company-id';
-    return this.service.startCampaign(id, body.smtpAccountId, workspaceId, body.delayMinutes, body.scheduledAt);
+    const accountIds = body.selectedAccountIds || body.smtpAccountId || [];
+    return this.service.startCampaign(id, accountIds, workspaceId, body.delayMinutes, body.scheduledAt);
   }
 
   @Post(':id/pause')
@@ -98,21 +99,23 @@ export class CreateCampaignController {
   @Post(':id/resume')
   async resumeCampaign(
     @Param('id') id: string, 
-    @Body() body: { smtpAccountId?: string | string[] } = {},
+    @Body() body: { selectedAccountIds?: string[]; smtpAccountId?: string | string[] } = {},
     @Request() req: any
   ) {
     const workspaceId = req.user?.companyId || 'default-company-id';
-    return this.service.resumeCampaign(id, workspaceId, body.smtpAccountId);
+    const accountIds = body.selectedAccountIds || body.smtpAccountId;
+    return this.service.resumeCampaign(id, workspaceId, accountIds);
   }
 
   @Post(':id/restart')
   async restartCampaign(
     @Param('id') id: string, 
-    @Body() body: { smtpAccountId?: string | string[] } = {},
+    @Body() body: { selectedAccountIds?: string[]; smtpAccountId?: string | string[] } = {},
     @Request() req: any
   ) {
     const workspaceId = req.user?.companyId || 'default-company-id';
-    return this.service.restartCampaign(id, workspaceId, body.smtpAccountId);
+    const accountIds = body.selectedAccountIds || body.smtpAccountId;
+    return this.service.restartCampaign(id, workspaceId, accountIds);
   }
 
   @Get()

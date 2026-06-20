@@ -7,6 +7,7 @@ import { EmailLog, EmailLogSchema } from '../logs/schemas/email-log.schema';
 import { SmtpSender, SmtpSenderSchema } from '../smtp-sender/entities/smtp-sender.entity';
 import { User, UserSchema } from '../auth/schemas/user.schema';
 import { GoogleMail, GoogleMailSchema } from '../google-mail/entities/google-mail.entity';
+import { OutlookMail, OutlookMailSchema } from '../outlook-mail/entities/outlook-mail.entity';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { GoogleMail, GoogleMailSchema } from '../google-mail/entities/google-mai
       { name: SmtpSender.name, schema: SmtpSenderSchema },
       { name: User.name, schema: UserSchema },
       { name: GoogleMail.name, schema: GoogleMailSchema },
+      { name: OutlookMail.name, schema: OutlookMailSchema },
     ]),
 
   ],

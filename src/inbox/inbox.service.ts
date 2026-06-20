@@ -5,6 +5,8 @@ import { Model } from 'mongoose';
 import { EmailLog, EmailLogDocument } from '../logs/schemas/email-log.schema';
 import { SmtpSender, SmtpSenderDocument } from '../smtp-sender/entities/smtp-sender.entity';
 import { GoogleMail, GoogleMailDocument } from '../google-mail/entities/google-mail.entity';
+import { OutlookMail, OutlookMailDocument } from '../outlook-mail/entities/outlook-mail.entity';
+import { OutlookMailService } from '../outlook-mail/outlook-mail.service';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { google } from 'googleapis';
@@ -21,13 +23,16 @@ export class InboxService {
     @InjectModel(EmailLog.name) private emailLogModel: Model<EmailLogDocument>,
     @InjectModel(SmtpSender.name) private smtpSenderModel: Model<SmtpSenderDocument>,
     @InjectModel(GoogleMail.name) private googleMailModel: Model<GoogleMailDocument>,
+    @InjectModel(OutlookMail.name) private outlookMailModel: Model<OutlookMailDocument>,
     private configService: ConfigService,
+    private outlookMailService: OutlookMailService,
   ) { }
 
   async listAllAccounts(companyId: string) {
     try {
       const smtpAccounts = await this.smtpSenderModel.find({ tenantId: companyId }).lean();
       const googleAccounts = await this.googleMailModel.find({ tenantId: companyId }).lean();
+      const outlookAccounts = await this.outlookMailModel.find({ tenantId: companyId }).lean();
 
       const allAccounts = [
         ...smtpAccounts.map(acc => ({
@@ -41,6 +46,13 @@ export class InboxService {
           id: acc._id,
           email: acc.email,
           type: 'GOOGLE',
+          name: acc.name,
+          connectedAt: (acc as any).createdAt
+        })),
+        ...outlookAccounts.map(acc => ({
+          id: acc._id,
+          email: acc.email,
+          type: 'OUTLOOK',
           name: acc.name,
           connectedAt: (acc as any).createdAt
         })),
@@ -66,6 +78,11 @@ export class InboxService {
         const googleAcc = await this.googleMailModel.findOne({ _id: accountId, tenantId: companyId });
         if (googleAcc) {
           email = googleAcc.email;
+        } else {
+          const outlookAcc = await this.outlookMailModel.findOne({ _id: accountId, tenantId: companyId });
+          if (outlookAcc) {
+            email = outlookAcc.email;
+          }
         }
       }
 
@@ -105,6 +122,9 @@ export class InboxService {
     const googleAcc = await this.googleMailModel.findOne({ _id: accountId, tenantId: companyId });
     if (googleAcc) return this.getGoogleReplies(googleAcc, messageId);
 
+    const outlookAcc = await this.outlookMailModel.findOne({ _id: accountId, tenantId: companyId });
+    if (outlookAcc) return this.getOutlookReplies(outlookAcc, messageId);
+
     throw new NotFoundException('Account not found');
   }
 
@@ -115,6 +135,9 @@ export class InboxService {
     const googleAcc = await this.googleMailModel.findOne({ _id: accountId, tenantId: companyId });
     if (googleAcc) return this.getGoogleReplies(googleAcc);
 
+    const outlookAcc = await this.outlookMailModel.findOne({ _id: accountId, tenantId: companyId });
+    if (outlookAcc) return this.getOutlookReplies(outlookAcc);
+
     throw new NotFoundException('Account not found');
   }
 
@@ -122,6 +145,7 @@ export class InboxService {
     try {
       const smtpAccounts = await this.smtpSenderModel.find({ tenantId: companyId });
       const googleAccounts = await this.googleMailModel.find({ tenantId: companyId });
+      const outlookAccounts = await this.outlookMailModel.find({ tenantId: companyId });
 
       const allReplies: any[] = [];
 
@@ -136,6 +160,13 @@ export class InboxService {
         const res: any = await this.getGoogleReplies(acc);
         if (res.statusCode === 200) {
           allReplies.push(...res.data.map(r => ({ ...r, accountEmail: acc.email, accountType: 'GOOGLE', accountId: acc._id })));
+        }
+      }
+
+      for (const acc of outlookAccounts) {
+        const res: any = await this.getOutlookReplies(acc);
+        if (res.statusCode === 200) {
+          allReplies.push(...res.data.map(r => ({ ...r, accountEmail: acc.email, accountType: 'OUTLOOK', accountId: acc._id })));
         }
       }
 
@@ -161,6 +192,11 @@ export class InboxService {
         const googleAcc = await this.googleMailModel.findOne({ _id: accountId, tenantId: companyId });
         if (googleAcc) {
           repliesRes = await this.getGoogleReplies(googleAcc, messageId);
+        } else {
+          const outlookAcc = await this.outlookMailModel.findOne({ _id: accountId, tenantId: companyId });
+          if (outlookAcc) {
+            repliesRes = await this.getOutlookReplies(outlookAcc, messageId);
+          }
         }
       }
 
@@ -265,7 +301,7 @@ export class InboxService {
                   status: { $ne: 'REPLIED' }
                 },
                 { $set: { status: 'REPLIED' } },
-                { new: true }
+                { returnDocument: 'after' as any }
               );
 
               if (logToUpdate && logToUpdate.campaignId) {
@@ -381,7 +417,7 @@ export class InboxService {
                 status: { $ne: 'REPLIED' }
               },
               { $set: { status: 'REPLIED' } },
-              { new: true }
+              { returnDocument: 'after' as any }
             );
 
             if (logToUpdate && logToUpdate.campaignId) {
@@ -408,6 +444,110 @@ export class InboxService {
 
       return new CustomResponse(200, 'Google replies fetched', detailedMessages.filter(m => m !== null));
     } catch (error) {
+      return new CustomResponse(500, error.message, []);
+    }
+  }
+
+  private async getOutlookReplies(account: OutlookMailDocument, targetMessageId?: string) {
+    const cleanId = (id: string) => id ? id.replace(/[<>]/g, '').trim().toLowerCase() : '';
+
+    let accessToken = '';
+    try {
+      accessToken = await this.outlookMailService.refreshAccessToken(account.refreshToken);
+      if (!accessToken) throw new Error('Refresh token invalid');
+    } catch (err) {
+      this.logger.error(`Failed to refresh Outlook token during reply fetch for ${account.email}: ${err.message}`);
+      accessToken = account.accessToken;
+    }
+
+    try {
+      const sentLogs = await this.emailLogModel.find({
+        smtpEmail: account.email,
+        companyId: account.tenantId,
+        campaignId: { $exists: true, $ne: null }
+      }).select('messageId').lean();
+      const sentMessageIds = new Set(sentLogs.map(log => cleanId(log.messageId)));
+
+      const queryParams = new URLSearchParams({
+        $top: '50',
+        $select: 'id,subject,from,receivedDateTime,bodyPreview,internetMessageId,conversationId',
+        $expand: 'singleValueExtendedProperties($filter=id eq \'String 0x1042\' or id eq \'String 0x1039\')'
+      });
+
+      const url = `https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?${queryParams.toString()}`;
+
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Graph API fetch failed: ${response.status} - ${errText}`);
+      }
+
+      const resData = await response.json();
+      const messages = resData.value || [];
+
+      const detailedMessages = await Promise.all(
+        messages.map(async (m: any) => {
+          const headers = m.singleValueExtendedProperties || [];
+          const inReplyToRaw = headers.find((h: any) => h.id === 'String 0x1042')?.value || '';
+          const referencesRaw = headers.find((h: any) => h.id === 'String 0x1039')?.value || '';
+
+          const inReplyTo = cleanId(inReplyToRaw);
+          const references = referencesRaw.split(/\s+/).map((ref: any) => cleanId(ref)).filter((id: any) => id.length > 0);
+
+          let isOurReply = false;
+          if (targetMessageId) {
+            const targetIdClean = cleanId(targetMessageId);
+            isOurReply = inReplyTo === targetIdClean || references.includes(targetIdClean);
+          } else {
+            isOurReply = sentMessageIds.has(inReplyTo) || references.some((ref: any) => sentMessageIds.has(ref));
+          }
+
+          if (!isOurReply) return null;
+
+          // Update original EmailLog status to REPLIED and increment campaign replied counter
+          const targetId = inReplyTo || (references.length > 0 ? references[0] : null);
+          if (targetId) {
+            const logToUpdate = await this.emailLogModel.findOneAndUpdate(
+              {
+                messageId: { $regex: targetId, $options: 'i' },
+                companyId: account.tenantId,
+                status: { $ne: 'REPLIED' }
+              },
+              { $set: { status: 'REPLIED' } },
+              { returnDocument: 'after' as any }
+            );
+
+            if (logToUpdate && logToUpdate.campaignId) {
+              await this.emailLogModel.db.model('CreateCampaign').updateOne(
+                { _id: logToUpdate.campaignId },
+                { $inc: { replied: 1 } }
+              );
+              this.logger.log(`📈 Incremented replied counter for campaign: ${logToUpdate.campaignId}`);
+            }
+          }
+
+          return {
+            id: m.id,
+            threadId: m.conversationId,
+            subject: m.subject,
+            from: m.from?.emailAddress?.name ? `"${m.from.emailAddress.name}" <${m.from.emailAddress.address}>` : m.from?.emailAddress?.address,
+            date: m.receivedDateTime,
+            messageId: m.internetMessageId,
+            inReplyTo,
+            snippet: m.bodyPreview,
+          };
+        })
+      );
+
+      return new CustomResponse(200, 'Outlook replies fetched', detailedMessages.filter(m => m !== null));
+    } catch (error) {
+      this.logger.error(`❌ [OUTLOOK] Failed for ${account.email} → ${error.message}`);
       return new CustomResponse(500, error.message, []);
     }
   }
