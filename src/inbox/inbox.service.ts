@@ -501,6 +501,7 @@ export class InboxService {
           const references = referencesRaw.split(/\s+/).map((ref: any) => cleanId(ref)).filter((id: any) => id.length > 0);
 
           let isOurReply = false;
+          let matchedSentLog: any = null;
           if (targetMessageId) {
             const targetIdClean = cleanId(targetMessageId);
             isOurReply = inReplyTo === targetIdClean || references.includes(targetIdClean);
@@ -508,18 +509,51 @@ export class InboxService {
             isOurReply = sentMessageIds.has(inReplyTo) || references.some((ref: any) => sentMessageIds.has(ref));
           }
 
+          // Fallback matching by Sender & Subject
+          if (!isOurReply) {
+            const replySender = m.from?.emailAddress?.address?.trim().toLowerCase();
+            const cleanSubject = (subj: string) => subj
+              ? subj.replace(/^(re|fwd|fw|aw|reply):\s*/i, '').trim().toLowerCase()
+              : '';
+            const replySubjectClean = cleanSubject(m.subject);
+
+            if (replySender && replySubjectClean) {
+              const possibleSentLog = await this.emailLogModel.findOne({
+                smtpEmail: account.email,
+                recipient: replySender,
+                companyId: account.tenantId,
+                campaignId: { $exists: true, $ne: null }
+              }).lean();
+
+              if (possibleSentLog && cleanSubject(possibleSentLog.subject) === replySubjectClean) {
+                isOurReply = true;
+                matchedSentLog = possibleSentLog;
+                this.logger.log(`🎯 Matched Outlook reply via Sender (${replySender}) and Subject (${replySubjectClean}) fallback!`);
+              }
+            }
+          }
+
           if (!isOurReply) return null;
 
           // Update original EmailLog status to REPLIED and increment campaign replied counter
           const targetId = inReplyTo || (references.length > 0 ? references[0] : null);
-          if (targetId) {
+          if (targetId || matchedSentLog) {
+            const query = matchedSentLog
+              ? { _id: matchedSentLog._id, status: { $ne: 'REPLIED' } }
+              : {
+                  messageId: { $regex: targetId, $options: 'i' },
+                  companyId: account.tenantId,
+                  status: { $ne: 'REPLIED' }
+                };
+
+            const updateData: any = { $set: { status: 'REPLIED' } };
+            if (matchedSentLog && inReplyTo) {
+              updateData.$set.messageId = inReplyToRaw; // sync the real messageId of the sent email
+            }
+
             const logToUpdate = await this.emailLogModel.findOneAndUpdate(
-              {
-                messageId: { $regex: targetId, $options: 'i' },
-                companyId: account.tenantId,
-                status: { $ne: 'REPLIED' }
-              },
-              { $set: { status: 'REPLIED' } },
+              query,
+              updateData,
               { returnDocument: 'after' as any }
             );
 

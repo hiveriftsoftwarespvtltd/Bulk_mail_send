@@ -74,6 +74,27 @@ export class CreateCampaign {
   scheduledAt: Date;
 
   @Prop()
+  timezone: string;
+
+  @Prop({ type: [String], default: [] })
+  sendDays: string[];
+
+  @Prop()
+  from: string;
+
+  @Prop()
+  to: string;
+
+  @Prop()
+  intervalMinutes: number;
+
+  @Prop()
+  campaignStartDate: Date;
+
+  @Prop()
+  maxLeadsPerDay: number;
+
+  @Prop()
   trackingDomainId: string;
 
   @Prop({ type: [String], default: [] })

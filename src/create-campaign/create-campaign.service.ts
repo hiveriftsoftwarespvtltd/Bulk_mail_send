@@ -22,6 +22,51 @@ import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 const csv = require('csv-parser');
 
+/**
+ * Computes the exact UTC Date for a given local date string and time string in a specific timezone.
+ */
+function getScheduledDateInTimezone(dateInput: string | Date, timeStr: string, timezone: string): Date {
+  let dateStr = '';
+  if (dateInput instanceof Date) {
+    dateStr = dateInput.toISOString().split('T')[0];
+  } else if (typeof dateInput === 'string') {
+    dateStr = dateInput.split('T')[0];
+  } else {
+    dateStr = new Date().toISOString().split('T')[0];
+  }
+
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const [hour, minute] = (timeStr || '00:00').split(':').map(Number);
+
+  const utcBase = new Date(Date.UTC(year, month - 1, day, hour, minute, 0, 0));
+
+  let offsetMs = 0;
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone || 'UTC',
+      timeZoneName: 'longOffset',
+    });
+    const parts = formatter.formatToParts(utcBase);
+    const tzPart = parts.find(p => p.type === 'timeZoneName');
+    if (tzPart) {
+      const match = tzPart.value.match(/GMT([+-]\d+)?(?::(\d+))?/);
+      if (match) {
+        const [_, signHours, minutes] = match;
+        if (signHours) {
+          const hours = parseInt(signHours, 10);
+          const mins = minutes ? parseInt(minutes, 10) : 0;
+          const sign = hours < 0 ? -1 : 1;
+          offsetMs = (Math.abs(hours) * 60 + mins) * sign * 60 * 1000;
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Error calculating timezone offset:', e);
+  }
+
+  return new Date(utcBase.getTime() - offsetMs);
+}
+
 @Injectable()
 export class CreateCampaignService {
   constructor(
@@ -421,29 +466,47 @@ export class CreateCampaignService {
   async startCampaign(id: string, smtpAccountId: string | string[], workspaceId: string, delayMinutes: number = 0, scheduledAt?: string) {
     console.log(` Attempting to start campaign: ${id} | SMTP Account(s): ${JSON.stringify(smtpAccountId)} | Workspace: ${workspaceId}`);
     try {
-      const campaign = await this.campaignModel.findOneAndUpdate(
-        { _id: id, workspaceId },
-        { 
-          scheduledAt: scheduledAt ? new Date(scheduledAt) : null, 
-          status: scheduledAt ? 'SCHEDULED' : 'ACTIVE'
-        },
-        { returnDocument: 'after' }
-      );
+      const campaign = await this.campaignModel.findOne({ _id: id, workspaceId });
 
       if (!campaign) {
         console.error(`Campaign NOT found: ${id} for workspace: ${workspaceId}`);
         throw new NotFoundException('Campaign not found. Please verify the campaign exists in your workspace.');
       }
+
+      // Determine exact UTC schedule date
+      let finalScheduledAt: Date | null = null;
+      if (scheduledAt) {
+        finalScheduledAt = new Date(scheduledAt);
+      } else if (campaign.campaignStartDate) {
+        const computedDate = getScheduledDateInTimezone(
+          campaign.campaignStartDate,
+          campaign.from || '09:00',
+          campaign.timezone || 'Asia/Kolkata'
+        );
+        // Only schedule if it's in the future
+        if (computedDate.getTime() > Date.now()) {
+          finalScheduledAt = computedDate;
+        }
+      }
+
+      campaign.scheduledAt = finalScheduledAt as Date;
+      campaign.status = finalScheduledAt ? 'SCHEDULED' : 'ACTIVE';
+
       let finalDelayMinutes = delayMinutes;
       if (!finalDelayMinutes || finalDelayMinutes === 0) {
-        console.log(` No manual delay provided. Searching for saved schedule for userId: ${campaign.userId}...`);
-        const savedSchedule = await this.scheduleModel.findOne({ userId: campaign.userId }).sort({ createdAt: -1 });
-        if (savedSchedule) {
-          finalDelayMinutes = savedSchedule.intervalMinutes;
-          console.log(`Found schedule! Using interval: ${finalDelayMinutes} minutes.`);
+        if (campaign.intervalMinutes) {
+          finalDelayMinutes = campaign.intervalMinutes;
+          console.log(`Using campaign schedule interval: ${finalDelayMinutes} minutes.`);
         } else {
-          console.log(`No schedule found. Using default minor delay.`);
-          finalDelayMinutes = 0.05;
+          console.log(` No manual delay provided. Searching for saved schedule for userId: ${campaign.userId}...`);
+          const savedSchedule = await this.scheduleModel.findOne({ userId: campaign.userId }).sort({ createdAt: -1 });
+          if (savedSchedule) {
+            finalDelayMinutes = savedSchedule.intervalMinutes;
+            console.log(`Found user schedule! Using interval: ${finalDelayMinutes} minutes.`);
+          } else {
+            console.log(`No schedule found. Using default minor delay.`);
+            finalDelayMinutes = 0.05;
+          }
         }
       }
 
@@ -500,8 +563,8 @@ export class CreateCampaignService {
       console.log(`✅ Found ${smtpConfigs.length} SMTP, ${googleConfigs.length} Google, and ${outlookConfigs.length} Outlook Config(s). Preparing...`);
 
       let delayMs = 0;
-      if (scheduledAt) {
-        const scheduledTime = new Date(scheduledAt).getTime();
+      if (finalScheduledAt) {
+        const scheduledTime = finalScheduledAt.getTime();
         if (isNaN(scheduledTime)) {
           throw new Error('Invalid scheduledAt date format.');
         }

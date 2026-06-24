@@ -34,7 +34,7 @@ export class OutlookMailService {
 
   private resolveFrontendUrl(candidate?: string): string {
     const fromEnv = this.configService.get<string>('FRONTEND_URL')?.trim();
-    const fallback = fromEnv || 'http://localhost:5174';
+    const fallback = fromEnv || 'https://mailpipes.online';
     const url = (candidate?.trim() || fallback).replace(/\/$/, '');
     return url;
   }
