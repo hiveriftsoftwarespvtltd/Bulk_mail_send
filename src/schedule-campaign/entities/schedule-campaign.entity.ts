@@ -29,6 +29,12 @@ export class ScheduleCampaign {
   @Prop({ required: true })
   intervalMinutes: number;
 
+  @Prop()
+  intervalValue: number;
+
+  @Prop()
+  intervalUnit: string;
+
   @Prop({ required: true })
   campaignStartDate: Date;
 

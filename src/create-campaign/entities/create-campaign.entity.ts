@@ -74,6 +74,12 @@ export class CreateCampaign {
   scheduledAt: Date;
 
   @Prop()
+  startedAt: Date;
+
+  @Prop()
+  finishedAt: Date;
+
+  @Prop()
   timezone: string;
 
   @Prop({ type: [String], default: [] })
@@ -87,6 +93,12 @@ export class CreateCampaign {
 
   @Prop()
   intervalMinutes: number;
+
+  @Prop()
+  intervalValue: number;
+
+  @Prop()
+  intervalUnit: string;
 
   @Prop()
   campaignStartDate: Date;

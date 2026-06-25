@@ -1,5 +1,5 @@
 // dto/create-schedule-campaign.dto.ts
-import { IsArray, IsDateString, IsNumber, IsString } from 'class-validator';
+import { IsArray, IsDateString, IsNumber, IsOptional, IsString } from 'class-validator';
 
 export class CreateScheduleCampaignDto {
   @IsString()
@@ -16,6 +16,14 @@ export class CreateScheduleCampaignDto {
 
   @IsNumber()
   intervalMinutes: number;
+
+  @IsOptional()
+  @IsNumber()
+  intervalValue?: number;
+
+  @IsOptional()
+  @IsString()
+  intervalUnit?: string;
 
   @IsDateString()
   campaignStartDate: Date;

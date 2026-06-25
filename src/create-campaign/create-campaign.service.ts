@@ -23,6 +23,51 @@ import { Queue } from 'bull';
 const csv = require('csv-parser');
 
 /**
+ * Returns local date, time, and weekday components for a given timezone and date.
+ */
+function getLocalDetails(timezone: string, date: Date = new Date()) {
+  try {
+    const options: Intl.DateTimeFormatOptions = {
+      timeZone: timezone || 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+      weekday: 'long',
+    };
+    const formatter = new Intl.DateTimeFormat('en-US', options);
+    const parts = formatter.formatToParts(date);
+    
+    const getValue = (type: string) => parts.find(p => p.type === type)?.value || '';
+
+    return {
+      weekday: getValue('weekday'),
+      year: parseInt(getValue('year'), 10),
+      month: parseInt(getValue('month'), 10),
+      day: parseInt(getValue('day'), 10),
+      hour: parseInt(getValue('hour'), 10),
+      minute: parseInt(getValue('minute'), 10),
+      second: parseInt(getValue('second'), 10),
+    };
+  } catch (e) {
+    console.error('Error getting local details:', e);
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return {
+      weekday: days[date.getUTCDay()],
+      year: date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate(),
+      hour: date.getUTCHours(),
+      minute: date.getUTCMinutes(),
+      second: date.getUTCSeconds(),
+    };
+  }
+}
+
+/**
  * Computes the exact UTC Date for a given local date string and time string in a specific timezone.
  */
 function getScheduledDateInTimezone(dateInput: string | Date, timeStr: string, timezone: string): Date {
@@ -275,6 +320,17 @@ export class CreateCampaignService {
 
   async update(id: string, workspaceId: string, dto: any) {
     try {
+      if (dto.intervalValue !== undefined && dto.intervalUnit !== undefined) {
+        const val = parseFloat(dto.intervalValue);
+        const unit = dto.intervalUnit;
+        if (unit === 'hours') {
+          dto.intervalMinutes = val * 60;
+        } else if (unit === 'seconds') {
+          dto.intervalMinutes = val / 60;
+        } else {
+          dto.intervalMinutes = val;
+        }
+      }
       const campaign = await this.campaignModel.findOneAndUpdate(
         { _id: id, workspaceId },
         dto,
@@ -291,6 +347,7 @@ export class CreateCampaignService {
 
   async remove(id: string, workspaceId: string) {
     try {
+      await this.releaseLocksForCampaign(id, workspaceId);
       const campaign = await this.campaignModel.findOneAndDelete({ _id: id, workspaceId });
       if (!campaign) {
         throw new NotFoundException('Campaign not found');
@@ -560,6 +617,16 @@ export class CreateCampaignService {
         throw new NotFoundException(`No valid sender accounts found. Please ensure you have at least one SMTP, Google, or Outlook account added.`);
       }
 
+      // Get all sender emails for the resolved configurations
+      const campaignEmails = [
+        ...smtpConfigs.map(c => c.fromEmail),
+        ...googleConfigs.map(c => c.email),
+        ...outlookConfigs.map(c => c.email),
+      ].filter(Boolean);
+
+      // Perform locking/conflict validation
+      await this.lockSendersForCampaign(id, campaignEmails, workspaceId);
+
       console.log(`✅ Found ${smtpConfigs.length} SMTP, ${googleConfigs.length} Google, and ${outlookConfigs.length} Outlook Config(s). Preparing...`);
 
       let delayMs = 0;
@@ -628,6 +695,21 @@ export class CreateCampaignService {
       this.googleMailModel.find({ _id: { $in: accountIds }, tenantId: workspaceId }).lean(),
       this.outlookMailModel.find({ _id: { $in: accountIds }, tenantId: workspaceId }).lean()
     ]);
+
+    // Check if any of the campaign's sender emails are currently locked by another campaign
+    const campaignEmails = [
+      ...smtpConfigs.map(c => c.fromEmail),
+      ...googleConfigs.map(c => c.email),
+      ...outlookConfigs.map(c => c.email),
+    ].filter(Boolean);
+
+    try {
+      await this.lockSendersForCampaign(campaignId, campaignEmails, workspaceId);
+    } catch (lockError) {
+      console.error(`❌ Background Job Lock Collision for campaign ${campaignId}: ${lockError.message}`);
+      await this.campaignModel.findByIdAndUpdate(campaignId, { status: 'PAUSED' });
+      return;
+    }
 
     // ✅ Resolve Tracking Domain:
     // 1. Try specifically selected domain for this campaign
@@ -765,17 +847,94 @@ export class CreateCampaignService {
     if (accounts.length === 0) {
       console.error(`❌ Job Failed: No valid accounts could be initialized.`);
       await this.campaignModel.findByIdAndUpdate(campaignId, { status: 'PAUSED' });
+      await this.releaseLocksForCampaign(campaignId, workspaceId);
       return;
     }
 
     await this.processCampaignSending(campaign, accounts, workspaceId, customTrackingDomain);
   }
 
+  async checkScheduleGuardrails(campaign: any, workspaceId: string): Promise<{ shouldDelay: boolean; delayMs: number }> {
+    const timezone = campaign.timezone || 'Asia/Kolkata';
+    const now = new Date();
+    const local = getLocalDetails(timezone, now);
+
+    // 1. CHECK ALLOWED SENDING DAYS
+    const sendDays = campaign.sendDays || [];
+    if (sendDays.length > 0 && !sendDays.includes(local.weekday)) {
+      console.log(`📅 Today (${local.weekday}) is not an allowed send day for campaign: ${campaign._id}.`);
+      let daysToAdd = 1;
+      for (let offset = 1; offset <= 7; offset++) {
+        const testDate = new Date(now.getTime() + offset * 24 * 60 * 60 * 1000);
+        const testLocal = getLocalDetails(timezone, testDate);
+        if (sendDays.includes(testLocal.weekday)) {
+          daysToAdd = offset;
+          break;
+        }
+      }
+      const targetDate = new Date(now.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+      const targetUtc = getScheduledDateInTimezone(targetDate, campaign.from || '09:00', timezone);
+      const delayMs = Math.max(0, targetUtc.getTime() - now.getTime());
+      return { shouldDelay: true, delayMs };
+    }
+
+    // 2. CHECK DAILY SENDING WINDOW
+    const fromTime = campaign.from || '09:00';
+    const toTime = campaign.to || '18:00';
+
+    const currentMinutes = local.hour * 60 + local.minute;
+    const [fromH, fromM] = fromTime.split(':').map(Number);
+    const [toH, toM] = toTime.split(':').map(Number);
+    const fromMinutes = fromH * 60 + fromM;
+    const toMinutes = toH * 60 + toM;
+
+    if (currentMinutes < fromMinutes) {
+      const targetUtc = getScheduledDateInTimezone(now, fromTime, timezone);
+      const delayMs = Math.max(0, targetUtc.getTime() - now.getTime());
+      return { shouldDelay: true, delayMs };
+    }
+
+    if (currentMinutes > toMinutes) {
+      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+      const targetUtc = getScheduledDateInTimezone(tomorrow, fromTime, timezone);
+      const delayMs = Math.max(0, targetUtc.getTime() - now.getTime());
+      return { shouldDelay: true, delayMs };
+    }
+
+    // 3. CHECK MAX LEADS PER DAY LIMIT
+    const maxLeads = campaign.maxLeadsPerDay || 0;
+    if (maxLeads > 0) {
+      const startOfTodayUtc = getScheduledDateInTimezone(now, '00:00', timezone);
+      const endOfTodayUtc = new Date(startOfTodayUtc.getTime() + 24 * 60 * 60 * 1000 - 1);
+
+      const logsCount = await this.emailLogModel.countDocuments({
+        campaignId: campaign._id.toString(),
+        companyId: workspaceId,
+        createdAt: { $gte: startOfTodayUtc, $lte: endOfTodayUtc }
+      });
+
+      if (logsCount >= maxLeads) {
+        console.log(`🚫 Campaign exceeded daily limit of ${maxLeads} emails (Sent today: ${logsCount}).`);
+        const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+        const targetUtc = getScheduledDateInTimezone(tomorrow, fromTime, timezone);
+        const delayMs = Math.max(0, targetUtc.getTime() - now.getTime());
+        return { shouldDelay: true, delayMs };
+      }
+    }
+
+    return { shouldDelay: false, delayMs: 0 };
+  }
+
   private async processCampaignSending(campaign: any, accounts: any[], workspaceId: string, customDomain?: string) {
     console.log(`🚀 Starting Bulk Send for Campaign: ${campaign.name} (Progress: ${campaign.currentIndex || 0}/${campaign.contacts.length})`);
 
     // Mark campaign as SENDING when bulk dispatch begins
-    await this.campaignModel.findByIdAndUpdate(campaign._id, { status: 'SENDING' });
+    const statusUpdate: any = { status: 'SENDING' };
+    if (!campaign.startedAt) {
+      statusUpdate.startedAt = new Date();
+      campaign.startedAt = statusUpdate.startedAt;
+    }
+    await this.campaignModel.findByIdAndUpdate(campaign._id, statusUpdate);
 
     let currentAccountIndex = 0;
     const startIndex = campaign.currentIndex || 0;
@@ -785,7 +944,38 @@ export class CreateCampaignService {
       const freshCampaign = await this.campaignModel.findById(campaign._id).lean();
       if (!freshCampaign || (freshCampaign as any).status === 'PAUSED') {
         console.log(`⏸️ Campaign ${campaign._id} has been PAUSED or deleted. Stopping execution at index ${i}.`);
+        await this.releaseLocksForCampaign(campaign._id.toString(), workspaceId);
         return;
+      }
+
+      // ✅ Validate Schedule Guardrails constraints before sending
+      const guard = await this.checkScheduleGuardrails(freshCampaign, workspaceId);
+      if (guard.shouldDelay) {
+        console.log(`⏳ Campaign ${campaign._id} window closed or limit reached. Delaying for ${guard.delayMs}ms.`);
+        await this.campaignModel.findByIdAndUpdate(campaign._id, {
+          status: 'SCHEDULED',
+          scheduledAt: new Date(Date.now() + guard.delayMs),
+          currentIndex: i,
+        });
+        
+        // Re-enqueue Bull job with computed delay
+        const jobData = {
+          campaignId: campaign._id.toString(),
+          accountIds: accounts.map(a => a.config._id.toString()),
+          workspaceId,
+        };
+        try {
+          await this.campaignQueue.add('process-campaign', jobData, {
+            delay: guard.delayMs,
+            removeOnComplete: true,
+          });
+        } catch (err) {
+          // Fallback timer if Redis has issues
+          setTimeout(() => {
+            this.runCampaignJob(jobData).catch(e => console.error('Fallback delay failed:', e));
+          }, guard.delayMs);
+        }
+        return; // stop execution loop!
       }
 
       const contact = campaign.contacts[i];
@@ -836,7 +1026,8 @@ export class CreateCampaignService {
     }
 
     // Mark campaign as FINISHED once all contacts have been processed
-    await this.campaignModel.findByIdAndUpdate(campaign._id, { status: 'FINISHED' });
+    await this.campaignModel.findByIdAndUpdate(campaign._id, { status: 'FINISHED', finishedAt: new Date() });
+    await this.releaseLocksForCampaign(campaign._id.toString(), workspaceId);
     console.log(`🏁 Finished Bulk Send for Campaign: ${campaign.name} → Status set to FINISHED`);
   }
 
@@ -847,6 +1038,7 @@ export class CreateCampaignService {
       { returnDocument: 'after' }
     );
     if (!campaign) throw new NotFoundException('Campaign not found');
+    await this.releaseLocksForCampaign(id, workspaceId);
     return new CustomResponse(200, 'Campaign paused successfully', campaign);
   }
 
@@ -881,5 +1073,123 @@ export class CreateCampaignService {
     // For now, we just reset the index.
 
     return this.startCampaign(id, smtpAccountId || [], workspaceId);
+  }
+
+  async lockSendersForCampaign(campaignId: string, emails: string[], tenantId: string) {
+    if (!emails || emails.length === 0) return;
+
+    // 1. Check database for active campaigns in the same workspace
+    const activeCampaigns = await this.campaignModel.find({
+      workspaceId: tenantId,
+      _id: { $ne: campaignId },
+      status: { $in: ['SENDING', 'ACTIVE', 'SCHEDULED'] },
+    });
+
+    for (const activeCampaign of activeCampaigns) {
+      // Resolve emails for this active campaign
+      let activeEmails: string[] = [];
+      const accountIds = activeCampaign.selectedAccountIds || [];
+      if (accountIds.length > 0) {
+        const [smtp, google, outlook] = await Promise.all([
+          this.smtpSenderModel.find({ _id: { $in: accountIds }, tenantId }),
+          this.googleMailModel.find({ _id: { $in: accountIds }, tenantId }),
+          this.outlookMailModel.find({ _id: { $in: accountIds }, tenantId }),
+        ]);
+        activeEmails = [
+          ...smtp.map(s => s.fromEmail),
+          ...google.map(g => g.email),
+          ...outlook.map(o => o.email),
+        ];
+      } else {
+        // Uses all workspace accounts
+        const [smtp, google, outlook] = await Promise.all([
+          this.smtpSenderModel.find({ tenantId }),
+          this.googleMailModel.find({ tenantId }),
+          this.outlookMailModel.find({ tenantId }),
+        ]);
+        activeEmails = [
+          ...smtp.map(s => s.fromEmail),
+          ...google.map(g => g.email),
+          ...outlook.map(o => o.email),
+        ];
+      }
+
+      const conflict = emails.some(email => activeEmails.includes(email));
+      if (conflict) {
+        throw new CustomError(
+          400,
+          'A campaign is already running using this email account. Please wait until the current campaign finishes or stop it before starting another.'
+        );
+      }
+    }
+
+    // 2. Check/Set Redis Locks
+    const redisClient = (this.campaignQueue as any).client;
+    if (redisClient && redisClient.status === 'ready') {
+      for (const email of emails) {
+        const lockKey = `lock:sender:${email}`;
+        const currentLock = await redisClient.get(lockKey);
+        if (currentLock && currentLock !== campaignId.toString()) {
+          throw new CustomError(
+            400,
+            'A campaign is already running using this email account. Please wait until the current campaign finishes or stop it before starting another.'
+          );
+        }
+      }
+
+      // If all clear, set locks in Redis
+      for (const email of emails) {
+        const lockKey = `lock:sender:${email}`;
+        await redisClient.set(lockKey, campaignId.toString());
+      }
+    }
+  }
+
+  async releaseLocksForCampaign(campaignId: string, tenantId: string) {
+    try {
+      const campaign = await this.campaignModel.findOne({ _id: campaignId, workspaceId: tenantId });
+      if (!campaign) return;
+
+      // Find all emails linked to this campaign
+      let emails: string[] = [];
+      const accountIds = campaign.selectedAccountIds || [];
+      if (accountIds.length > 0) {
+        const [smtp, google, outlook] = await Promise.all([
+          this.smtpSenderModel.find({ _id: { $in: accountIds }, tenantId }),
+          this.googleMailModel.find({ _id: { $in: accountIds }, tenantId }),
+          this.outlookMailModel.find({ _id: { $in: accountIds }, tenantId }),
+        ]);
+        emails = [
+          ...smtp.map(s => s.fromEmail),
+          ...google.map(g => g.email),
+          ...outlook.map(o => o.email),
+        ];
+      } else {
+        const [smtp, google, outlook] = await Promise.all([
+          this.smtpSenderModel.find({ tenantId }),
+          this.googleMailModel.find({ tenantId }),
+          this.outlookMailModel.find({ tenantId }),
+        ]);
+        emails = [
+          ...smtp.map(s => s.fromEmail),
+          ...google.map(g => g.email),
+          ...outlook.map(o => o.email),
+        ];
+      }
+
+      const redisClient = (this.campaignQueue as any).client;
+      if (redisClient && redisClient.status === 'ready') {
+        for (const email of emails) {
+          const lockKey = `lock:sender:${email}`;
+          const currentLock = await redisClient.get(lockKey);
+          if (currentLock === campaignId.toString()) {
+            await redisClient.del(lockKey);
+            console.log(`🔓 Released Redis lock for sender: ${email}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error releasing locks for campaign ${campaignId}:`, error);
+    }
   }
 }

@@ -18,6 +18,18 @@ export class ScheduleCampaignService {
 
   async create(userId: string, dto: CreateScheduleCampaignDto) {
     try {
+      let intervalMinutes = dto.intervalMinutes;
+      if (dto.intervalValue !== undefined && dto.intervalUnit !== undefined) {
+        const val = dto.intervalValue;
+        const unit = dto.intervalUnit;
+        if (unit === 'hours') {
+          intervalMinutes = val * 60;
+        } else if (unit === 'seconds') {
+          intervalMinutes = val / 60;
+        } else {
+          intervalMinutes = val;
+        }
+      }
       const data = {
         userId,
         timezone: dto.timezone,
@@ -26,7 +38,9 @@ export class ScheduleCampaignService {
           from: dto.from,
           to: dto.to,
         },
-        intervalMinutes: dto.intervalMinutes,
+        intervalMinutes,
+        intervalValue: dto.intervalValue,
+        intervalUnit: dto.intervalUnit,
         campaignStartDate: dto.campaignStartDate,
         maxLeadsPerDay: dto.maxLeadsPerDay,
       };
@@ -69,7 +83,6 @@ export class ScheduleCampaignService {
       const updateData: any = {
         timezone: dto.timezone,
         sendDays: dto.sendDays,
-        intervalMinutes: dto.intervalMinutes,
         campaignStartDate: dto.campaignStartDate,
         maxLeadsPerDay: dto.maxLeadsPerDay,
       };
@@ -79,6 +92,22 @@ export class ScheduleCampaignService {
           from: dto.from,
           to: dto.to,
         };
+      }
+
+      if (dto.intervalValue !== undefined && dto.intervalUnit !== undefined) {
+        const val = dto.intervalValue;
+        const unit = dto.intervalUnit;
+        updateData.intervalValue = val;
+        updateData.intervalUnit = unit;
+        if (unit === 'hours') {
+          updateData.intervalMinutes = val * 60;
+        } else if (unit === 'seconds') {
+          updateData.intervalMinutes = val / 60;
+        } else {
+          updateData.intervalMinutes = val;
+        }
+      } else if (dto.intervalMinutes !== undefined) {
+        updateData.intervalMinutes = dto.intervalMinutes;
       }
 
       const updated = await this.model.findOneAndUpdate(
