@@ -6,7 +6,7 @@ import { CreateCampaignService } from '../create-campaign.service';
 export class CampaignProcessor {
   constructor(private readonly campaignService: CreateCampaignService) {}
 
-  @Process({ name: 'process-campaign', concurrency: 50 })
+  @Process({ name: 'process-campaign', concurrency: 200 })
   async handleProcessCampaign(job: Job) {
     console.log(`🎯 Processing background job for campaign: ${job.data.campaignId}`);
     await this.campaignService.runCampaignJob(job.data);
